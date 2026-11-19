@@ -1,0 +1,7 @@
+#!/bin/sh
+while read -r _ _ remote_ref _; do
+	if [ "$remote_ref" = refs/heads/main ]; then
+		echo "pre-push: main only changes through pull requests" >&2
+		exit 1
+	fi
+done
