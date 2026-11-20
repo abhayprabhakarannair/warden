@@ -162,8 +162,12 @@ class Wake:
         self._ctx.locked(lambda: self._apply(results))()
 
     def _reachable(self, ip):
+        """A routing error means unreachable; a refused ping socket (ping_group_range) is a setup fault and
+        propagates, so it is logged instead of every machine quietly reading offline."""
         try:
             return self._ping(ip)
+        except PermissionError:
+            raise
         except OSError:
             return False
 

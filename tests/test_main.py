@@ -71,3 +71,28 @@ def test_poll_forever_survives_any_error(capsys):
     err = capsys.readouterr().err
     assert "flaky poll failed" in err
     assert "ValueError: bug" in err
+
+
+def test_poll_forever_logs_a_repeated_error_once_until_recovery(capsys):
+    import threading
+
+    from warden.__main__ import poll_forever
+
+    outcomes = [PermissionError("denied"), PermissionError("denied"), None, PermissionError("denied")]
+    stop = threading.Event()
+
+    class Setup:
+        name = "wake"
+
+        def poll_every_s(self):
+            return 0.01
+
+        def poll(self):
+            outcome = outcomes.pop(0)
+            if not outcomes:
+                stop.set()
+            if outcome:
+                raise outcome
+
+    poll_forever(Setup(), stop)
+    assert capsys.readouterr().err.count("wake poll failed") == 2

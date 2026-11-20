@@ -32,13 +32,18 @@ def schedule(agent):
 
 def poll_forever(module, stop):
     """Runs module.poll() until stop is set. A failing poll is logged and skipped: if this thread died, the
-    module's state would freeze while the agent still reported online."""
+    module's state would freeze while the agent still reported online. The same error repeated is logged
+    once until a poll succeeds."""
+    last = None
     while not stop.wait(module.poll_every_s()):
         try:
             module.poll()
-        except Exception:  # noqa: BLE001
-            print(f"warden: {module.name} poll failed", file=sys.stderr)
-            traceback.print_exc()
+            last = None
+        except Exception as e:  # noqa: BLE001
+            if repr(e) != last:
+                print(f"warden: {module.name} poll failed", file=sys.stderr)
+                traceback.print_exc()
+            last = repr(e)
 
 
 def build(config, bus):

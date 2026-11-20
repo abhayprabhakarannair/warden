@@ -173,3 +173,14 @@ def test_a_ping_error_on_one_target_does_not_stop_the_others(agent, bus):
     module.poll()
     targets = bus.state()["wake"]["targets"]
     assert (targets["devil"]["power"], targets["nas"]["power"]) == ("offline", "online")
+
+
+def test_a_refused_ping_socket_is_an_error_not_offline(agent, bus):
+    def ping(ip):
+        raise PermissionError("operation not permitted")
+
+    module = Wake(agent, [DEVIL], "192.0.2.255", send=lambda *_: None, ping=ping)
+    agent.add(module)
+    with pytest.raises(PermissionError):
+        module.poll()
+    assert module.state()["targets"]["devil"]["power"] == "unknown"
