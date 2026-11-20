@@ -135,3 +135,41 @@ def test_icmp_ping_unreachable_times_out():
     except PermissionError:
         pytest.skip("ping sockets not allowed for this group (net.ipv4.ping_group_range)")
     assert icmp_ping("192.0.2.1", timeout_s=0.2) is False
+
+
+def test_wake_while_online_and_still_answering_is_not_an_up(agent, bus, clock, net, wake):
+    net.up[DEVIL.ip] = True
+    wake.poll()
+    agent.on_message(b"wake devil")
+    clock.advance(1)
+    wake.poll()
+    assert [e["event"] for e in bus.events()] == ["wake_sent"]
+    assert bus.state()["wake"]["targets"]["devil"]["power"] == "online"
+
+
+def test_wake_while_looking_online_but_actually_off_reports_the_real_duration(agent, bus, clock, net, wake):
+    net.up[DEVIL.ip] = True
+    wake.poll()
+    net.up[DEVIL.ip] = False
+    agent.on_message(b"wake devil")
+    clock.advance(1)
+    wake.poll()
+    clock.advance(20)
+    net.up[DEVIL.ip] = True
+    wake.poll()
+    assert bus.events()[-1] == {"event": "up", "target": "devil", "after_s": 21}
+
+
+def test_a_ping_error_on_one_target_does_not_stop_the_others(agent, bus):
+    nas = Target("nas", "02:00:00:00:00:09", "192.0.2.9")
+
+    def ping(ip):
+        if ip == DEVIL.ip:
+            raise OSError("no route to host")
+        return True
+
+    module = Wake(agent, [DEVIL, nas], "192.0.2.255", send=lambda *_: None, ping=ping)
+    agent.add(module)
+    module.poll()
+    targets = bus.state()["wake"]["targets"]
+    assert (targets["devil"]["power"], targets["nas"]["power"]) == ("offline", "online")

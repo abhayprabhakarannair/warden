@@ -46,7 +46,7 @@ def test_build_wires_router_modules(tmp_path):
     assert [m.name for m in agent.modules if hasattr(m, "poll")] == ["wake", "wan"]
 
 
-def test_poll_forever_survives_os_errors():
+def test_poll_forever_survives_any_error(capsys):
     import threading
 
     from warden.__main__ import poll_forever
@@ -64,7 +64,10 @@ def test_poll_forever_survives_os_errors():
             calls.append(1)
             if len(calls) == 3:
                 stop.set()
-            raise OSError("ping refused")
+            raise (OSError("ping refused") if len(calls) == 1 else ValueError("bug"))
 
     poll_forever(Flaky(), stop)
     assert len(calls) == 3
+    err = capsys.readouterr().err
+    assert "flaky poll failed" in err
+    assert "ValueError: bug" in err

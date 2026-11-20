@@ -61,6 +61,8 @@ class Monitor:
         self._power = "unknown"
         self._fails = 0
         self._wake_at = None
+        self._wake_from_online = False
+        self._missed_since_wake = False
         self._seen_at = None
 
     def on_ping(self, reachable, now):
@@ -73,9 +75,12 @@ class Monitor:
             if self._wake_at is not None:
                 after = now - self._wake_at
                 self._wake_at = None
+                if self._wake_from_online and not self._missed_since_wake:
+                    return None
                 return "up", after
             return ("up", None) if was == "offline" else None
         self._fails += 1
+        self._missed_since_wake = self._wake_at is not None
         if self._power == "unknown":
             self._power = "offline"
         elif self._power == "online" and self._fails >= self._offline_after:
@@ -84,7 +89,10 @@ class Monitor:
         return None
 
     def on_wake_sent(self, now):
+        """A machine that answered before the wake and keeps answering was never down: no `up` for it."""
         self._wake_at = now
+        self._wake_from_online = self._power == "online"
+        self._missed_since_wake = False
 
     def tick(self, now):
         if self._wake_at is not None and now - self._wake_at >= self._wake_timeout_s:
@@ -150,8 +158,14 @@ class Wake:
         return 1 if any(m.waking for m in self._monitors.values()) else 5
 
     def poll(self):
-        results = [(name, self._ping(t.ip)) for name, t in self._targets.items()]
+        results = [(name, self._reachable(t.ip)) for name, t in self._targets.items()]
         self._ctx.locked(lambda: self._apply(results))()
+
+    def _reachable(self, ip):
+        try:
+            return self._ping(ip)
+        except OSError:
+            return False
 
     def _apply(self, results):
         now = self._ctx.mono()

@@ -2,6 +2,7 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 
 from warden import __version__
 from warden.agent import Agent
@@ -30,12 +31,14 @@ def schedule(agent):
 
 
 def poll_forever(module, stop):
-    """Runs module.poll() until stop is set; an OS error (a refused ping, an unreadable file) skips one poll."""
+    """Runs module.poll() until stop is set. A failing poll is logged and skipped: if this thread died, the
+    module's state would freeze while the agent still reported online."""
     while not stop.wait(module.poll_every_s()):
         try:
             module.poll()
-        except OSError as e:
-            print(f"warden: {module.name} poll failed: {e}", file=sys.stderr)
+        except Exception:  # noqa: BLE001
+            print(f"warden: {module.name} poll failed", file=sys.stderr)
+            traceback.print_exc()
 
 
 def build(config, bus):
