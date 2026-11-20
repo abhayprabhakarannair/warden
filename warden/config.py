@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from warden.modules.wake import MAC, Target
+from warden.modules.wan import Link
 
 NAME = re.compile(r"^[a-z0-9_-]{1,31}$")
 IFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
@@ -29,7 +30,12 @@ class Config:
     dry_run: bool
     wake_targets: tuple[Target, ...] = ()
     wake_broadcast: str = ""
-    wans: tuple[tuple[str, str], ...] = ()
+    wans: tuple[Link, ...] = ()
+    wan_preferences: tuple[tuple[str, str], ...] = ()
+    lan: str = ""
+    wifi_api: str = ""
+    wifi_user: str = ""
+    wifi_password: str = ""
 
 
 def load(env=os.environ):
@@ -74,7 +80,19 @@ def load(env=os.environ):
     if "wake" in modules:
         wake_targets = _targets(need("WARDEN_WAKE_TARGETS"))
         wake_broadcast = _ipv4("WARDEN_WAKE_BROADCAST", need("WARDEN_WAKE_BROADCAST"))
-    wans = _wans(need("WARDEN_WANS")) if "wan" in modules else ()
+    wans, preferences = (), ()
+    if "wan" in modules:
+        wans = _wans(need("WARDEN_WANS"), env.get("WARDEN_WAN_CAPS", ""))
+        preferences = _preferences(env.get("WARDEN_WAN_PREFERENCES", ""), {w.name for w in wans})
+    lan, wifi_api, wifi_user, wifi_password = "", "", "", ""
+    if "clients" in modules:
+        lan = _network("WARDEN_LAN", need("WARDEN_LAN"))
+        wifi_api = env.get("WARDEN_WIFI_API", "").strip()
+        if wifi_api:
+            if not wifi_api.startswith(("http://", "https://")):
+                raise ConfigError("WARDEN_WIFI_API must be an http(s) URL")
+            wifi_user = need("WARDEN_WIFI_USER")
+            wifi_password = _secret("WARDEN_WIFI_PASSWORD_FILE", need("WARDEN_WIFI_PASSWORD_FILE"))
 
     return Config(
         host=need("WARDEN_MQTT_HOST"),
@@ -89,7 +107,29 @@ def load(env=os.environ):
         wake_targets=wake_targets,
         wake_broadcast=wake_broadcast,
         wans=wans,
+        wan_preferences=preferences,
+        lan=lan,
+        wifi_api=wifi_api,
+        wifi_user=wifi_user,
+        wifi_password=wifi_password,
     )
+
+
+def _secret(key, path):
+    try:
+        value = Path(path).read_text().strip()
+    except OSError as e:
+        raise ConfigError(f"cannot read {key}: {e}") from e
+    if not value:
+        raise ConfigError(f"{key} is empty")
+    return value
+
+
+def _network(key, value):
+    try:
+        return str(ipaddress.IPv4Network(value))
+    except ValueError as e:
+        raise ConfigError(f"{key}: {value!r} is not an IPv4 network") from e
 
 
 def _ipv4(key, value):
@@ -123,10 +163,31 @@ def _targets(raw):
     return tuple(targets)
 
 
-def _wans(raw):
-    """name=mwan3-interface,… in failover order"""
-    wans = _pairs("WARDEN_WANS", raw)
-    for name, iface in wans:
-        if not IFACE.match(iface):
-            raise ConfigError(f"WARDEN_WANS: {name} has an invalid interface {iface!r}")
-    return tuple(wans)
+def _wans(raw, caps_raw):
+    """name=mwan3-interface[/device],… in failover order; caps as name=gigabytes,…"""
+    caps = {}
+    for name, value in _pairs("WARDEN_WAN_CAPS", caps_raw) if caps_raw.strip() else []:
+        if not value.isdigit() or int(value) == 0:
+            raise ConfigError(f"WARDEN_WAN_CAPS: {name} needs a whole number of gigabytes, got {value!r}")
+        caps[name] = int(value) * 10**9
+    links = []
+    for name, value in _pairs("WARDEN_WANS", raw):
+        iface, _, device = value.partition("/")
+        for part in (iface, device) if device else (iface,):
+            if not IFACE.match(part):
+                raise ConfigError(f"WARDEN_WANS: {name} has an invalid interface {part!r}")
+        links.append(Link(name, iface, device or None, caps.pop(name, None)))
+    if caps:
+        raise ConfigError(f"WARDEN_WAN_CAPS names unknown links: {', '.join(sorted(caps))}")
+    return tuple(links)
+
+
+def _preferences(raw, names):
+    """ip=link,…: the link a device tries first."""
+    out = []
+    for item in (i.strip() for i in raw.split(",") if i.strip()):
+        ip, sep, name = item.partition("=")
+        if not sep or name.strip() not in names:
+            raise ConfigError(f"WARDEN_WAN_PREFERENCES: expected ip=known-link, got {item!r}")
+        out.append((_ipv4("WARDEN_WAN_PREFERENCES", ip.strip()), name.strip()))
+    return tuple(out)

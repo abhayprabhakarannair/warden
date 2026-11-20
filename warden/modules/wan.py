@@ -1,52 +1,171 @@
+import json
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+
+
+@dataclass(frozen=True)
+class Link:
+    name: str
+    iface: str
+    device: str | None = None
+    cap_bytes: int | None = None
+
+
+def vnstat_usage(devices):
+    """Bytes in the current vnstat month (the billing cycle, with MonthRotate) per device, both directions."""
+    out = subprocess.run(["vnstat", "--json", "m", "1"], capture_output=True, text=True, check=False, timeout=10)
+    if out.returncode != 0:
+        raise OSError(f"vnstat exited {out.returncode}: {out.stderr.strip()[:200]}")
+    try:
+        data = json.loads(out.stdout)
+    except ValueError as e:
+        raise OSError(f"vnstat printed invalid JSON: {e}") from e
+    usage = {}
+    for iface in data.get("interfaces", []):
+        months = iface.get("traffic", {}).get("month") or []
+        if iface.get("name") in devices and months:
+            usage[iface["name"]] = int(months[-1].get("rx", 0)) + int(months[-1].get("tx", 0))
+    return usage
+
+
+def ubus_set(ip, isp):
+    """Asks the router's wanpref helper (root, via a ubus ACL for this user) to route ip through isp or auto."""
+    args = json.dumps({"ip": ip, "isp": isp})
+    out = subprocess.run(["ubus", "call", "wanpref", "set", args], capture_output=True, text=True, check=False)
+    if out.returncode != 0:
+        raise OSError((out.stderr or out.stdout).strip()[:200] or f"ubus exited {out.returncode}")
 
 
 class Wan:
     """Internet uplinks as tracked by mwan3, in failover order; the active one is the first online.
 
-    wans maps a display name to its mwan3 interface. Status comes from mwan3track's per-interface STATUS file
-    (online, offline, connecting, disconnecting); a missing file means tracking is stopped, as when the link is down.
+    Status comes from mwan3track's per-interface STATUS file; a missing file means tracking is stopped, as when the
+    link is down. With a device and usage source, each link reports bytes used this cycle (and its cap).
+
+    Per device: `preferences` maps an address to the ISP it tries first; `isp <ip> <isp|auto>` sets a runtime
+    override through `set_override`, which the router keeps in `override_dir` (one file per address) and drops
+    while that ISP is offline. route(ip) says which ISP a device's traffic uses.
     """
 
     name = "wan"
-    commands = ()
+    commands = ("isp",)
+    args = MappingProxyType({"isp": 2})
+    USAGE_EVERY_S = 60
 
-    def __init__(self, ctx, wans, status_dir=Path("/var/run/mwan3track")):
+    def __init__(
+        self,
+        ctx,
+        links,
+        preferences=None,
+        status_dir=Path("/var/run/mwan3track"),
+        override_dir=Path("/tmp/wanpref"),
+        usage=vnstat_usage,
+        set_override=ubus_set,
+    ):
         self._ctx = ctx
-        self._wans = dict(wans)
+        self._links = tuple(links)
+        self._names = [link.name for link in self._links]
+        self._preferences = dict(preferences or {})
         self._dir = Path(status_dir)
-        self._last = None
+        self._override_dir = Path(override_dir)
+        self._usage = usage
+        self._set_override = set_override
+        self._status = None
+        self._overrides = {}
+        self._used = {}
+        self._usage_at = None
 
     def handle(self, command, args, source):
-        raise ValueError(f"wan has no command {command!r}")
+        ip, isp = args
+        if isp != "auto" and isp not in self._names:
+            self._ctx.emit("rejected", command=command, reason="unknown isp", isp=isp)
+            return
+        try:
+            self._set_override(ip, isp)
+        except OSError as e:
+            self._ctx.emit("isp_failed", ip=ip, isp=isp, source=source, error=str(e)[:200])
+            return
+        self._overrides = self._read_overrides()
+        self._ctx.emit("isp_set", ip=ip, isp=isp, source=source)
+        self._ctx.changed()
 
     def poll_every_s(self):
         return 2
 
     def poll(self):
-        self._ctx.locked(self._apply)()
-
-    def _read(self):
-        out = {}
-        for name, iface in self._wans.items():
+        status, overrides = self._read_status(), self._read_overrides()
+        used = None
+        now = self._ctx.mono()
+        devices = {link.device for link in self._links if link.device}
+        if devices and (self._usage_at is None or now - self._usage_at >= self.USAGE_EVERY_S):
+            self._usage_at = now
             try:
-                out[name] = (self._dir / iface / "STATUS").read_text().strip() or "unknown"
+                usage = self._usage(devices)
+                used = {link.name: usage[link.device] for link in self._links if link.device in usage}
+            except (OSError, subprocess.TimeoutExpired):
+                used = None
+        self._ctx.locked(lambda: self._apply(status, overrides, used))()
+
+    def _read_status(self):
+        out = {}
+        for link in self._links:
+            try:
+                out[link.name] = (self._dir / link.iface / "STATUS").read_text().strip() or "unknown"
             except OSError:
-                out[name] = "down"
+                out[link.name] = "down"
         return out
 
-    def _apply(self):
-        current = self._read()
-        if self._last is not None:
-            for name, status in current.items():
-                was_online, is_online = self._last.get(name) == "online", status == "online"
+    def _read_overrides(self):
+        out = {}
+        try:
+            entries = list(self._override_dir.iterdir())
+        except OSError:
+            return out
+        for path in entries:
+            try:
+                isp = path.read_text().strip()
+            except OSError:
+                continue
+            if isp in self._names:
+                out[path.name] = isp
+        return out
+
+    def _apply(self, status, overrides, used):
+        if self._status is not None:
+            for name, now in status.items():
+                was_online, is_online = self._status.get(name) == "online", now == "online"
                 if was_online != is_online:
-                    self._ctx.emit("wan_up" if is_online else "wan_down", wan=name, status=status)
-        if current != self._last:
-            self._last = current
+                    self._ctx.emit("wan_up" if is_online else "wan_down", wan=name, status=now)
+        changed = status != self._status or overrides != self._overrides or (used is not None and used != self._used)
+        self._status, self._overrides = status, overrides
+        if used is not None:
+            self._used = used
+        if changed:
             self._ctx.changed()
 
+    def _online(self):
+        status = self._status if self._status is not None else self._read_status()
+        return [n for n in self._names if status.get(n) == "online"]
+
+    def route(self, ip):
+        online = self._online()
+        override = self._overrides.get(ip)
+        preferred = self._preferences.get(ip)
+        order = ([preferred] if preferred else []) + [n for n in self._names if n != preferred]
+        via = override if override in online else next((n for n in order if n in online), None)
+        return {"via": via, "override": override}
+
     def state(self):
-        current = self._last if self._last is not None else self._read()
-        active = next((n for n, s in current.items() if s == "online"), None)
-        return {"active": active, "links": [{"name": n, "status": s} for n, s in current.items()]}
+        status = self._status if self._status is not None else self._read_status()
+        online = self._online()
+        links = []
+        for link in self._links:
+            entry = {"name": link.name, "status": status[link.name]}
+            if link.name in self._used:
+                entry["used_bytes"] = self._used[link.name]
+            if link.cap_bytes is not None:
+                entry["cap_bytes"] = link.cap_bytes
+            links.append(entry)
+        return {"active": online[0] if online else None, "links": links}
