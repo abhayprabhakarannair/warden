@@ -34,7 +34,12 @@ def vnstat_usage(devices):
 def ubus_set(ip, isp):
     """Asks the router's wanpref helper (root, via a ubus ACL for this user) to route ip through isp or auto."""
     args = json.dumps({"ip": ip, "isp": isp})
-    out = subprocess.run(["ubus", "call", "wanpref", "set", args], capture_output=True, text=True, check=False)
+    try:
+        out = subprocess.run(
+            ["ubus", "call", "wanpref", "set", args], capture_output=True, text=True, check=False, timeout=10
+        )
+    except subprocess.TimeoutExpired as e:
+        raise OSError("ubus call wanpref timed out") from e
     if out.returncode != 0:
         raise OSError((out.stderr or out.stdout).strip()[:200] or f"ubus exited {out.returncode}")
 

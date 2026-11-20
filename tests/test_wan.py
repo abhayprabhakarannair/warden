@@ -1,6 +1,8 @@
+import subprocess
+
 import pytest
 
-from warden.modules.wan import Link, Wan
+from warden.modules.wan import Link, Wan, ubus_set
 
 LINKS = [
     Link("bsnl", "wan_bsnl", "wan1"),
@@ -195,3 +197,24 @@ def test_override_files_not_named_by_an_address_are_ignored(router, wan):
     (router.root / "overrides" / "..x").write_text("jio\n")
     wan.poll()
     assert wan._overrides == {}
+
+
+def test_ubus_set_times_out_as_an_os_error(monkeypatch):
+    def hang(argv, **kw):
+        assert kw["timeout"] == 10
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr("warden.modules.wan.subprocess.run", hang)
+    with pytest.raises(OSError, match="timed out"):
+        ubus_set("192.0.2.8", "jio")
+
+
+def test_hung_router_call_is_reported_and_releases_the_agent(agent, bus, router, wan):
+    def hang(ip, isp):
+        raise OSError("ubus call wanpref timed out")
+
+    wan._set_override = hang
+    agent.on_message(b"isp 192.0.2.8 jio")
+    assert bus.events()[-1]["event"] == "isp_failed"
+    agent.on_message(b"refresh")
+    assert bus.last("meta") is not None

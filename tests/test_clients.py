@@ -149,3 +149,13 @@ def test_uci_hosts_without_uci(monkeypatch):
 
     monkeypatch.setattr("warden.modules.clients.subprocess.run", missing)
     assert uci_hosts() == {}
+
+
+def test_uci_hosts_timeout_means_no_names(monkeypatch):
+    import subprocess
+
+    def hang(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr("warden.modules.clients.subprocess.run", hang)
+    assert uci_hosts() == {}

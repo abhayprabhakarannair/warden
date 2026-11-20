@@ -6,8 +6,10 @@ from pathlib import Path
 def uci_hosts():
     """DHCP reservations as {ip: name}, from OpenWrt's dhcp config."""
     try:
-        out = subprocess.run(["uci", "-q", "show", "dhcp"], capture_output=True, text=True, check=False).stdout
-    except OSError:
+        out = subprocess.run(
+            ["uci", "-q", "show", "dhcp"], capture_output=True, text=True, check=False, timeout=5
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
         return {}
     fields = {}
     for line in out.splitlines():
