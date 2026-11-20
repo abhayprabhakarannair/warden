@@ -6,9 +6,12 @@ import threading
 from warden import __version__
 from warden.agent import Agent
 from warden.config import ConfigError, load
+from warden.modules.clients import Clients
 from warden.modules.power import Power
 from warden.modules.sensors import Sensors
 from warden.modules.system import System
+from warden.modules.wake import Wake
+from warden.modules.wan import Wan
 
 
 def run(argv):
@@ -26,12 +29,24 @@ def schedule(agent):
     return start
 
 
+def poll_forever(module, stop):
+    """Runs module.poll() until stop is set; an OS error (a refused ping, an unreadable file) skips one poll."""
+    while not stop.wait(module.poll_every_s()):
+        try:
+            module.poll()
+        except OSError as e:
+            print(f"warden: {module.name} poll failed: {e}", file=sys.stderr)
+
+
 def build(config, bus):
     agent = Agent(bus, config.topic, __version__, state_every_s=config.state_every_s)
     factories = {
         "power": lambda: Power(agent, config.grace_s, schedule(agent), run, dry_run=config.dry_run),
         "system": lambda: System(agent),
         "sensors": lambda: Sensors(agent),
+        "wake": lambda: Wake(agent, config.wake_targets, config.wake_broadcast),
+        "wan": lambda: Wan(agent, config.wans),
+        "clients": lambda: Clients(agent),
     }
     for name in config.modules:
         agent.add(factories[name]())
@@ -57,6 +72,9 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: stop.set())
 
     bus.start()
+    for module in agent.modules:
+        if hasattr(module, "poll"):
+            threading.Thread(target=poll_forever, args=(module, stop), daemon=True).start()
     while not stop.wait(1):
         agent.tick()
     agent.stop()

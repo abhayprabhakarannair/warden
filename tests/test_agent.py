@@ -11,8 +11,8 @@ class Echo:
         self.ctx = ctx
         self.calls = []
 
-    def handle(self, command, source):
-        self.calls.append((command, source))
+    def handle(self, command, args, source):
+        self.calls.append((command, *args, source))
         self.ctx.changed()
 
     def state(self):
@@ -134,3 +134,44 @@ def test_locked_runs_and_flushes_state(agent, bus, echo):
 def test_events_are_compact_json(agent, bus):
     agent.emit("x", a=1, b="two")
     assert bus.sent[-1] == ("home/devil/event", '{"event":"x","a":1,"b":"two"}', False)
+
+
+class Pair(Echo):
+    name = "pair"
+    commands = ("wake",)
+    args = {"wake": 1}  # noqa: RUF012
+
+    def meta(self):
+        return {"wakes": ["devil"]}
+
+
+@pytest.fixture
+def pair(agent):
+    module = Pair(agent)
+    agent.add(module)
+    return module
+
+
+def test_commands_take_declared_arguments_then_source(agent, bus, pair):
+    agent.on_message(b"wake devil console")
+    agent.on_message(b"wake devil")
+    assert pair.calls == [("wake", "devil", "console"), ("wake", "devil", "mqtt")]
+
+
+@pytest.mark.parametrize("payload", [b"wake", b"wake devil console extra", b"wake Devil"])
+def test_wrong_argument_count_is_malformed(agent, bus, pair, payload):
+    agent.on_message(payload)
+    assert bus.events() == [{"event": "rejected", "reason": "malformed"}]
+    assert pair.calls == []
+
+
+def test_modules_add_meta_fields(agent, bus, pair):
+    agent.on_connect()
+    assert json.loads(bus.last("meta"))["wakes"] == ["devil"]
+
+
+def test_refresh_accepts_a_source_only(agent, bus, echo):
+    agent.on_message(b"refresh console")
+    assert bus.events() == []
+    agent.on_message(b"refresh a b")
+    assert bus.events() == [{"event": "rejected", "reason": "malformed"}]

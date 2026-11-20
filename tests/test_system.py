@@ -52,4 +52,4 @@ def test_garbage_is_ignored(agent, proc, name, content, field):
 
 def test_has_no_commands(agent, proc):
     with pytest.raises(ValueError):
-        System(agent, proc=proc, kernel="k").handle("anything", "x")
+        System(agent, proc=proc, kernel="k").handle("anything", (), "x")

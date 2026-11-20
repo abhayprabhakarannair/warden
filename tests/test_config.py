@@ -1,6 +1,6 @@
 import pytest
 
-from warden.config import KNOWN_MODULES, ConfigError, load
+from warden.config import DEFAULT_MODULES, ConfigError, load
 
 
 @pytest.fixture
@@ -13,7 +13,7 @@ def env(tmp_path):
 def test_defaults(env):
     c = load(env)
     assert (c.host, c.port, c.user, c.password, c.topic) == ("bus.example", 8443, "devil", "s3cret", "home/devil")
-    assert c.modules == KNOWN_MODULES
+    assert c.modules == DEFAULT_MODULES
     assert (c.grace_s, c.state_every_s, c.dry_run) == (10, 30, False)
 
 
@@ -98,4 +98,59 @@ def test_modules(env, value, message):
 def test_dry_run_is_strict(env, value):
     env["WARDEN_DRY_RUN"] = value
     with pytest.raises(ConfigError, match="WARDEN_DRY_RUN"):
+        load(env)
+
+
+def test_router_modules(env):
+    env |= {
+        "WARDEN_MODULES": "system,wake,wan,clients",
+        "WARDEN_WAKE_TARGETS": "devil=02:00:00:00:0A:01@192.0.2.4, nas=aa:bb:cc:dd:ee:ff@192.0.2.9",
+        "WARDEN_WAKE_BROADCAST": "192.0.2.255",
+        "WARDEN_WANS": "bsnl=wan_bsnl,railwire=wan_railwire",
+    }
+    c = load(env)
+    assert [(t.name, t.mac, t.ip) for t in c.wake_targets] == [
+        ("devil", "02:00:00:00:0a:01", "192.0.2.4"),
+        ("nas", "aa:bb:cc:dd:ee:ff", "192.0.2.9"),
+    ]
+    assert c.wake_broadcast == "192.0.2.255"
+    assert c.wans == (("bsnl", "wan_bsnl"), ("railwire", "wan_railwire"))
+
+
+def test_module_settings_are_only_required_when_enabled(env):
+    assert load(env).wake_targets == ()
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"WARDEN_WAKE_TARGETS": None}, "WARDEN_WAKE_TARGETS is required"),
+        ({"WARDEN_WAKE_BROADCAST": None}, "WARDEN_WAKE_BROADCAST is required"),
+        ({"WARDEN_WAKE_TARGETS": "devil=02:00:00:00:01@192.0.2.4"}, "mac@ip"),
+        ({"WARDEN_WAKE_TARGETS": "devil=02:00:00:00:00:01"}, "mac@ip"),
+        ({"WARDEN_WAKE_TARGETS": "devil=02:00:00:00:00:01@192.0.2.400"}, "not an IPv4"),
+        ({"WARDEN_WAKE_TARGETS": "Devil=02:00:00:00:00:01@192.0.2.4"}, "name=value"),
+        ({"WARDEN_WAKE_TARGETS": "a=02:00:00:00:00:01@1.2.3.4,a=02:00:00:00:00:02@1.2.3.5"}, "twice"),
+        ({"WARDEN_WAKE_BROADCAST": "everyone"}, "not an IPv4"),
+    ],
+)
+def test_bad_wake_settings(env, extra, message):
+    env |= {
+        "WARDEN_MODULES": "wake",
+        "WARDEN_WAKE_TARGETS": "devil=02:00:00:00:00:01@192.0.2.4",
+        "WARDEN_WAKE_BROADCAST": "192.0.2.255",
+    }
+    for key, value in extra.items():
+        if value is None:
+            del env[key]
+        else:
+            env[key] = value
+    with pytest.raises(ConfigError, match=message):
+        load(env)
+
+
+@pytest.mark.parametrize("wans", ["bsnl", "bsnl=wan bsnl", "bsnl=a_very_long_interface_name"])
+def test_bad_wans(env, wans):
+    env |= {"WARDEN_MODULES": "wan", "WARDEN_WANS": wans}
+    with pytest.raises(ConfigError, match="WARDEN_WANS"):
         load(env)

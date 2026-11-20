@@ -11,7 +11,7 @@ class System:
         self._proc = Path(proc)
         self._kernel = kernel or os.uname().release
 
-    def handle(self, command, source):
+    def handle(self, command, args, source):
         raise ValueError(f"system has no command {command!r}")
 
     def state(self):
