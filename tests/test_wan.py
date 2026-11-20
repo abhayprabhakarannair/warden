@@ -182,3 +182,16 @@ def test_unknown_override_files_are_ignored(router, wan):
     (router.root / "overrides" / TV).write_text("starlink\n")
     wan.poll()
     assert wan.route(TV)["override"] is None
+
+
+@pytest.mark.parametrize("ip", ["..", "...", "192.0.2", "999.1.1.1", "192.0.2.07"])
+def test_invalid_addresses_never_reach_the_router(agent, bus, router, wan, ip):
+    agent.on_message(f"isp {ip} jio".encode())
+    assert router.set_calls == []
+    assert bus.events() == [{"event": "rejected", "command": "isp", "reason": "invalid ip", "ip": ip}]
+
+
+def test_override_files_not_named_by_an_address_are_ignored(router, wan):
+    (router.root / "overrides" / "..x").write_text("jio\n")
+    wan.poll()
+    assert wan._overrides == {}

@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import subprocess
 from dataclasses import dataclass
@@ -79,6 +80,9 @@ class Wan:
 
     def handle(self, command, args, source):
         ip, isp = args
+        if not _is_ipv4(ip):
+            self._ctx.emit("rejected", command=command, reason="invalid ip", ip=ip)
+            return
         if isp != "auto" and isp not in self._names:
             self._ctx.emit("rejected", command=command, reason="unknown isp", isp=isp)
             return
@@ -128,7 +132,7 @@ class Wan:
                 isp = path.read_text().strip()
             except OSError:
                 continue
-            if isp in self._names:
+            if isp in self._names and _is_ipv4(path.name):
                 out[path.name] = isp
         return out
 
@@ -169,3 +173,10 @@ class Wan:
                 entry["cap_bytes"] = link.cap_bytes
             links.append(entry)
         return {"active": online[0] if online else None, "links": links}
+
+
+def _is_ipv4(text):
+    try:
+        return str(ipaddress.IPv4Address(text)) == text
+    except ValueError:
+        return False
