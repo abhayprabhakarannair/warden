@@ -1,6 +1,6 @@
 [project]
 name = "warden"
-version = "0.2.0"
+version = "0.3.0"
 description = "Host agent: power, state and health over MQTT"
 requires-python = ">=3.11"
 dependencies = ["paho-mqtt>=1.6"]

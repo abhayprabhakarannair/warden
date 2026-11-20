@@ -13,6 +13,7 @@ from warden.modules.sensors import Sensors
 from warden.modules.system import System
 from warden.modules.wake import Wake
 from warden.modules.wan import Wan
+from warden.modules.wifi import UbusWifi
 
 
 def run(argv):
@@ -48,13 +49,15 @@ def poll_forever(module, stop):
 
 def build(config, bus):
     agent = Agent(bus, config.topic, __version__, state_every_s=config.state_every_s)
+    wan = Wan(agent, config.wans, dict(config.wan_preferences)) if "wan" in config.modules else None
+    wifi = UbusWifi(config.wifi_api, config.wifi_user, config.wifi_password) if config.wifi_api else None
     factories = {
         "power": lambda: Power(agent, config.grace_s, schedule(agent), run, dry_run=config.dry_run),
         "system": lambda: System(agent),
         "sensors": lambda: Sensors(agent),
         "wake": lambda: Wake(agent, config.wake_targets, config.wake_broadcast),
-        "wan": lambda: Wan(agent, config.wans),
-        "clients": lambda: Clients(agent),
+        "wan": lambda: wan,
+        "clients": lambda: Clients(agent, config.lan, wifi=wifi, route=wan.route if wan else None),
     }
     for name in config.modules:
         agent.add(factories[name]())

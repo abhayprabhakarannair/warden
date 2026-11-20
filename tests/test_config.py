@@ -101,12 +101,19 @@ def test_dry_run_is_strict(env, value):
         load(env)
 
 
-def test_router_modules(env):
+def test_router_modules(env, tmp_path):
+    (tmp_path / "wifi").write_text("pw\n")
     env |= {
         "WARDEN_MODULES": "system,wake,wan,clients",
         "WARDEN_WAKE_TARGETS": "devil=02:00:00:00:0A:01@192.0.2.4, nas=aa:bb:cc:dd:ee:ff@192.0.2.9",
         "WARDEN_WAKE_BROADCAST": "192.0.2.255",
-        "WARDEN_WANS": "bsnl=wan_bsnl,railwire=wan_railwire",
+        "WARDEN_WANS": "bsnl=wan_bsnl/wan1,railwire=wan_railwire",
+        "WARDEN_WAN_CAPS": "bsnl=2000",
+        "WARDEN_WAN_PREFERENCES": "192.0.2.7=railwire",
+        "WARDEN_LAN": "192.0.2.0/24",
+        "WARDEN_WIFI_API": "http://192.0.2.2/ubus",
+        "WARDEN_WIFI_USER": "warden",
+        "WARDEN_WIFI_PASSWORD_FILE": str(tmp_path / "wifi"),
     }
     c = load(env)
     assert [(t.name, t.mac, t.ip) for t in c.wake_targets] == [
@@ -114,7 +121,53 @@ def test_router_modules(env):
         ("nas", "aa:bb:cc:dd:ee:ff", "192.0.2.9"),
     ]
     assert c.wake_broadcast == "192.0.2.255"
-    assert c.wans == (("bsnl", "wan_bsnl"), ("railwire", "wan_railwire"))
+    assert [(w.name, w.iface, w.device, w.cap_bytes) for w in c.wans] == [
+        ("bsnl", "wan_bsnl", "wan1", 2000 * 10**9),
+        ("railwire", "wan_railwire", None, None),
+    ]
+    assert c.wan_preferences == (("192.0.2.7", "railwire"),)
+    assert (c.lan, c.wifi_api, c.wifi_user, c.wifi_password) == (
+        "192.0.2.0/24",
+        "http://192.0.2.2/ubus",
+        "warden",
+        "pw",
+    )
+
+
+def test_wifi_is_optional_for_clients(env):
+    env |= {"WARDEN_MODULES": "clients", "WARDEN_LAN": "192.0.2.0/24"}
+    assert load(env).wifi_api == ""
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"WARDEN_WAN_CAPS": "starlink=10"}, "unknown links"),
+        ({"WARDEN_WAN_CAPS": "bsnl=1.5"}, "whole number"),
+        ({"WARDEN_WAN_PREFERENCES": "192.0.2.7=starlink"}, "known-link"),
+        ({"WARDEN_WAN_PREFERENCES": "devil=bsnl"}, "not an IPv4"),
+        ({"WARDEN_WANS": "bsnl=wan_bsnl/w a n"}, "invalid interface"),
+    ],
+)
+def test_bad_wan_settings(env, extra, message):
+    env |= {"WARDEN_MODULES": "wan", "WARDEN_WANS": "bsnl=wan_bsnl/wan1"} | extra
+    with pytest.raises(ConfigError, match=message):
+        load(env)
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"WARDEN_LAN": ""}, "WARDEN_LAN is required"),
+        ({"WARDEN_LAN": "192.0.2.1/24"}, "not an IPv4 network"),
+        ({"WARDEN_WIFI_API": "192.0.2.2"}, "http"),
+        ({"WARDEN_WIFI_API": "http://ap/ubus"}, "WARDEN_WIFI_USER is required"),
+    ],
+)
+def test_bad_clients_settings(env, extra, message):
+    env |= {"WARDEN_MODULES": "clients", "WARDEN_LAN": "192.0.2.0/24"} | extra
+    with pytest.raises(ConfigError, match=message):
+        load(env)
 
 
 def test_module_settings_are_only_required_when_enabled(env):

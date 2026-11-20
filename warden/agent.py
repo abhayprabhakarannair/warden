@@ -3,7 +3,7 @@ import re
 import threading
 import time
 
-WORD = re.compile(r"^[a-z0-9_-]{1,31}$")
+WORD = re.compile(r"^[a-z0-9_.-]{1,31}$")
 MAX_PAYLOAD = 96
 RESUME_GAP_S = 5
 

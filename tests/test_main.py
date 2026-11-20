@@ -37,13 +37,16 @@ def test_build_wires_router_modules(tmp_path):
         WARDEN_WAKE_TARGETS="devil=02:00:00:00:00:01@192.0.2.4",
         WARDEN_WAKE_BROADCAST="192.0.2.255",
         WARDEN_WANS="bsnl=wan_bsnl",
+        WARDEN_LAN="192.0.2.0/24",
     )
     agent = build(c, bus)
     agent.on_connect()
     meta = json.loads(bus.last("meta"))
-    assert meta["commands"] == ["wake", "refresh"]
+    assert meta["commands"] == ["wake", "isp", "refresh"]
     assert meta["wakes"] == ["devil"]
-    assert [m.name for m in agent.modules if hasattr(m, "poll")] == ["wake", "wan"]
+    assert [m.name for m in agent.modules if hasattr(m, "poll")] == ["wake", "wan", "clients"]
+    clients = agent.modules[-1]
+    assert clients._route == agent.modules[2].route
 
 
 def test_poll_forever_survives_any_error(capsys):
