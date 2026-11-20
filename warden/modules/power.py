@@ -36,7 +36,7 @@ class Power:
         self._pending = None
         self._tokens = itertools.count(1)
 
-    def handle(self, command, source):
+    def handle(self, command, args, source):
         if command == "cancel":
             self._cancel(source)
         else:

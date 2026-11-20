@@ -3,7 +3,7 @@ import re
 import threading
 import time
 
-COMMAND = re.compile(r"^([a-z0-9_-]{1,31})(?: +([a-z0-9_-]{1,31}))?$")
+WORD = re.compile(r"^[a-z0-9_-]{1,31}$")
 MAX_PAYLOAD = 96
 RESUME_GAP_S = 5
 
@@ -18,6 +18,9 @@ class Agent:
 
     bus provides publish(topic, payload, retain) and subscribe(topic). Every entry point takes the same lock,
     so module code never runs concurrently.
+
+    A command is `<command> [args…] [source]`; a module's `args` maps each of its commands to how many arguments
+    it takes (default none), and its optional meta() adds fields to meta.
     """
 
     def __init__(self, bus, topic, version, clock=Clock, state_every_s=30):
@@ -59,6 +62,10 @@ class Agent:
                 self._flush()
 
         return run
+
+    @property
+    def modules(self):
+        return tuple(self._modules)
 
     def add(self, module):
         clash = set(module.commands) & (set(self._commands) | {"refresh"})
@@ -106,20 +113,26 @@ class Agent:
         except UnicodeDecodeError:
             self.emit("rejected", reason="malformed")
             return
-        match = COMMAND.match(text.strip()) if len(payload) <= MAX_PAYLOAD else None
-        if match is None:
+        words = text.strip().split(" ") if len(payload) <= MAX_PAYLOAD else []
+        words = [w for w in words if w]
+        if not words or not all(WORD.match(w) for w in words):
             self.emit("rejected", reason="malformed")
             return
-        command, source = match.group(1), match.group(2) or "mqtt"
-        if command == "refresh":
+        command, rest = words[0], words[1:]
+        module = self._commands.get(command)
+        if module is None and command != "refresh":
+            self.emit("rejected", command=command, reason="unknown command")
+            return
+        arity = getattr(module, "args", {}).get(command, 0)
+        if len(rest) not in (arity, arity + 1):
+            self.emit("rejected", reason="malformed")
+            return
+        args, source = tuple(rest[:arity]), rest[arity] if len(rest) > arity else "mqtt"
+        if module is None:
             self._publish_meta()
             self._dirty = True
             return
-        module = self._commands.get(command)
-        if module is None:
-            self.emit("rejected", command=command, reason="unknown command")
-            return
-        module.handle(command, source)
+        module.handle(command, args, source)
 
     def _flush(self):
         if self._dirty:
@@ -132,6 +145,9 @@ class Agent:
             "modules": [m.name for m in self._modules],
             "commands": [*self._commands, "refresh"],
         }
+        for m in self._modules:
+            if hasattr(m, "meta"):
+                meta |= m.meta()
         self._bus.publish(f"{self._topic}/meta", json.dumps(meta, separators=(",", ":")), retain=True)
 
     def _publish_state(self):

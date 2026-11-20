@@ -14,7 +14,7 @@ class Sensors:
         self._ctx = ctx
         self._hwmon = Path(hwmon)
 
-    def handle(self, command, source):
+    def handle(self, command, args, source):
         raise ValueError(f"sensors has no command {command!r}")
 
     def state(self):
