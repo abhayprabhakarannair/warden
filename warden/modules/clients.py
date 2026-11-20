@@ -20,10 +20,25 @@ def uci_hosts():
     return {f["ip"]: f["name"] for f in fields.values() if "ip" in f and "name" in f}
 
 
-class Clients:
-    """Devices on the LAN: every address in `lan` with a resolved neighbour entry.
+def ip_neigh():
+    """The IPv4 neighbour table as `ip -4 neigh show` prints it."""
+    try:
+        return subprocess.run(
+            ["ip", "-4", "neigh", "show"], capture_output=True, text=True, check=False, timeout=5
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
 
-    Names come from DHCP reservations, then leases. With a Wi-Fi source, each device also gets `link` (`wifi` with
+
+# Most recently confirmed first; FAILED and INCOMPLETE entries are not devices.
+FRESHNESS = {"PERMANENT": 0, "REACHABLE": 0, "DELAY": 1, "PROBE": 1, "STALE": 2}
+
+
+class Clients:
+    """Devices on the LAN: every address in `lan` with a resolved neighbour entry, one per hardware address.
+
+    A device seen at several addresses (it moved, and the old entry has not expired) is listed once: at the address
+    its DHCP lease names, else the most recently confirmed one. Names come from DHCP reservations, then leases. With a Wi-Fi source, each device also gets `link` (`wifi` with
     `band` and `signal`, or `wired`); with a route source, `via` (the ISP its traffic uses) and `override`.
     Publishes no MAC addresses. Emits `joined` and `left`.
     """
@@ -36,7 +51,7 @@ class Clients:
         ctx,
         lan,
         leases=Path("/tmp/dhcp.leases"),
-        arp=Path("/proc/net/arp"),
+        neighbours=ip_neigh,
         hosts=uci_hosts,
         wifi=None,
         route=None,
@@ -44,7 +59,7 @@ class Clients:
         self._ctx = ctx
         self._lan = ipaddress.IPv4Network(lan)
         self._leases = Path(leases)
-        self._arp = Path(arp)
+        self._neigh = neighbours
         self._hosts = hosts
         self._wifi = wifi
         self._route = route
@@ -61,8 +76,9 @@ class Clients:
         self._ctx.locked(lambda: self._apply(devices))()
 
     def _scan(self):
-        neighbours = self._neighbours()
-        names = {**self._leased(), **self._hosts()}
+        leases = self._leases_by_ip()
+        neighbours = self._neighbours({ip: mac for ip, (mac, _) in leases.items()})
+        names = {**{ip: name for ip, (_, name) in leases.items() if name}, **self._hosts()}
         stations = None
         if self._wifi is not None:
             try:
@@ -97,26 +113,32 @@ class Clients:
             out.append(device)
         return {"online": out}
 
-    def _leased(self):
+    def _leases_by_ip(self):
         out = {}
         for line in _lines(self._leases):
             parts = line.split()
-            if len(parts) >= 4 and parts[3] != "*":
-                out[parts[2]] = parts[3]
+            if len(parts) >= 4:
+                out[parts[2]] = (parts[1].lower(), None if parts[3] == "*" else parts[3])
         return out
 
-    def _neighbours(self):
-        out = {}
-        for line in _lines(self._arp)[1:]:
+    def _neighbours(self, leased):
+        """{ip: mac} for live LAN entries, keeping one address per mac."""
+        by_mac = {}
+        for line in self._neigh().splitlines():
             parts = line.split()
-            if len(parts) < 4 or parts[2] == "0x0":
+            if len(parts) < 4 or "lladdr" not in parts or parts[-1] not in FRESHNESS:
                 continue
+            ip, mac = parts[0], parts[parts.index("lladdr") + 1].lower()
             try:
-                inside = ipaddress.IPv4Address(parts[0]) in self._lan
+                if ipaddress.IPv4Address(ip) not in self._lan:
+                    continue
             except ValueError:
                 continue
-            if inside:
-                out[parts[0]] = parts[3].lower()
+            by_mac.setdefault(mac, []).append((ip, FRESHNESS[parts[-1]]))
+        out = {}
+        for mac, seen in by_mac.items():
+            ip, _ = min(seen, key=lambda e: (leased.get(e[0]) != mac, e[1], _order(e[0])))
+            out[ip] = mac
         return out
 
 

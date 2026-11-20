@@ -47,4 +47,4 @@ pytest
 ruff check . && ruff format --check .
 ```
 
-`wake` pings over unprivileged ICMP sockets, so `net.ipv4.ping_group_range` must include the service's group. `wan` reads mwan3track's status files, `vnstat --json` and the override files in `/tmp/wanpref`, and calls `ubus call wanpref set`; `clients` reads dnsmasq's lease file, `/proc/net/arp` and `uci show dhcp`. All are readable by an unprivileged user on OpenWrt; the ubus call needs an ACL. Requires `paho-mqtt` 1.6 or 2.x at runtime; tests need neither the network nor paho. Enable the hooks once per clone: `git config core.hooksPath .githooks`.
+`wake` pings over unprivileged ICMP sockets, so `net.ipv4.ping_group_range` must include the service's group. `wan` reads mwan3track's status files, `vnstat --json` and the override files in `/tmp/wanpref`, and calls `ubus call wanpref set`; `clients` reads dnsmasq's lease file, `ip -4 neigh show` and `uci show dhcp`. All are readable by an unprivileged user on OpenWrt; the ubus call needs an ACL. Requires `paho-mqtt` 1.6 or 2.x at runtime; tests need neither the network nor paho. Enable the hooks once per clone: `git config core.hooksPath .githooks`.

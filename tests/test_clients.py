@@ -10,14 +10,14 @@ LEASES = """\
 garbage
 """
 
-ARP = """\
-IP address       HW type     Flags       HW address            Mask     Device
-192.0.2.4        0x1         0x2         02:00:00:00:00:01     *        br-lan
-192.0.2.204      0x1         0x2         02:00:00:00:00:03     *        br-lan
-192.0.2.2        0x1         0x2         02:00:00:00:00:02     *        br-lan
-192.0.2.103      0x1         0x2         02:00:00:00:00:06     *        br-lan
-192.0.2.30       0x1         0x0         00:00:00:00:00:00     *        br-lan
-198.51.100.1     0x1         0x2         02:00:00:00:00:05     *        lan2
+NEIGH = """\
+192.0.2.4 dev br-lan lladdr 02:00:00:00:00:01 REACHABLE
+192.0.2.204 dev br-lan lladdr 02:00:00:00:00:03 STALE
+192.0.2.2 dev br-lan lladdr 02:00:00:00:00:02 DELAY
+192.0.2.103 dev br-lan lladdr 02:00:00:00:00:06 STALE
+192.0.2.30 dev br-lan  FAILED
+192.0.2.31 dev br-lan  INCOMPLETE
+198.51.100.1 dev lan2 lladdr 02:00:00:00:00:05 REACHABLE
 """
 
 
@@ -35,13 +35,14 @@ class Wifi:
 @pytest.fixture
 def files(tmp_path):
     (tmp_path / "leases").write_text(LEASES)
-    (tmp_path / "arp").write_text(ARP)
+    (tmp_path / "neigh").write_text(NEIGH)
     return tmp_path
 
 
 def make(agent, files, **kw):
     hosts = kw.pop("hosts", lambda: {"192.0.2.103": "old-devil", "192.0.2.4": "devil"})
-    module = Clients(agent, "192.0.2.0/24", leases=files / "leases", arp=files / "arp", hosts=hosts, **kw)
+    neighbours = lambda: (files / "neigh").read_text()
+    module = Clients(agent, "192.0.2.0/24", leases=files / "leases", neighbours=neighbours, hosts=hosts, **kw)
     agent.add(module)
     return module
 
@@ -97,11 +98,11 @@ def test_joined_and_left_events(agent, bus, files):
     clients = make(agent, files)
     clients.poll()
     assert bus.events() == []
-    arp = (files / "arp").read_text()
-    (files / "arp").write_text(
-        arp.replace("192.0.2.103 ", "192.0.2.150 ").replace(
-            "0x0         00:00:00:00:00:00", "0x2         02:00:00:00:00:04"
-        )
+    neigh = (files / "neigh").read_text()
+    (files / "neigh").write_text(
+        neigh.replace(
+            "192.0.2.103 dev br-lan lladdr 02:00:00:00:00:06", "192.0.2.150 dev br-lan lladdr 02:00:00:00:00:06"
+        ).replace("192.0.2.30 dev br-lan  FAILED", "192.0.2.30 dev br-lan lladdr 02:00:00:00:00:04 REACHABLE")
     )
     clients.poll()
     assert bus.events() == [
@@ -109,6 +110,35 @@ def test_joined_and_left_events(agent, bus, files):
         {"event": "joined", "ip": "192.0.2.150", "name": None},
         {"event": "left", "ip": "192.0.2.103", "name": "old-devil"},
     ]
+
+
+def test_a_device_that_moved_is_listed_once_at_its_leased_address(agent, bus, files):
+    with (files / "neigh").open("a") as f:
+        f.write("192.0.2.200 dev br-lan lladdr 02:00:00:00:00:02 REACHABLE\n")
+    clients = make(agent, files)
+    clients.poll()
+    ips = [d["ip"] for d in bus.state()["clients"]["online"]]
+    assert "192.0.2.2" in ips
+    assert "192.0.2.200" not in ips
+
+
+def test_without_a_lease_the_freshest_address_wins(agent, bus, files):
+    with (files / "neigh").open("a") as f:
+        f.write("192.0.2.99 dev br-lan lladdr 02:00:00:00:00:06 REACHABLE\n")
+    clients = make(agent, files)
+    clients.poll()
+    ips = [d["ip"] for d in bus.state()["clients"]["online"]]
+    assert "192.0.2.99" in ips
+    assert "192.0.2.103" not in ips
+
+
+def test_equally_fresh_addresses_without_a_lease_keep_the_lowest(agent, bus, files):
+    with (files / "neigh").open("a") as f:
+        f.write("192.0.2.50 dev br-lan lladdr 02:00:00:00:00:06 STALE\n")
+    clients = make(agent, files)
+    clients.poll()
+    ips = [d["ip"] for d in bus.state()["clients"]["online"]]
+    assert ("192.0.2.50" in ips, "192.0.2.103" in ips) == (True, False)
 
 
 def test_unchanged_poll_does_not_republish(agent, bus, files):
@@ -119,8 +149,8 @@ def test_unchanged_poll_does_not_republish(agent, bus, files):
     assert bus.last("state") is None
 
 
-def test_missing_files_mean_no_devices(agent, bus, tmp_path):
-    clients = Clients(agent, "192.0.2.0/24", leases=tmp_path / "x", arp=tmp_path / "y", hosts=dict)
+def test_missing_sources_mean_no_devices(agent, bus, tmp_path):
+    clients = Clients(agent, "192.0.2.0/24", leases=tmp_path / "x", neighbours=str, hosts=dict)
     agent.add(clients)
     clients.poll()
     assert bus.state()["clients"] == {"online": []}
@@ -159,3 +189,15 @@ def test_uci_hosts_timeout_means_no_names(monkeypatch):
 
     monkeypatch.setattr("warden.modules.clients.subprocess.run", hang)
     assert uci_hosts() == {}
+
+
+def test_ip_neigh_failure_means_no_neighbours(monkeypatch):
+    import subprocess
+
+    from warden.modules.clients import ip_neigh
+
+    def hang(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr("warden.modules.clients.subprocess.run", hang)
+    assert ip_neigh() == ""
