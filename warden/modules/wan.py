@@ -48,7 +48,8 @@ class Wan:
     """Internet uplinks as tracked by mwan3, in failover order; the active one is the first online.
 
     Status comes from mwan3track's per-interface STATUS file; a missing file means tracking is stopped, as when the
-    link is down. With a device and usage source, each link reports bytes used this cycle (and its cap).
+    link is down. With a device and usage source, each link reports bytes used this cycle (and its cap); if usage
+    cannot be read, the last values stay and `usage_error` says why until a read succeeds.
 
     Per device: `preferences` maps an address to the ISP it tries first; `isp <ip> <isp|auto>` sets a runtime
     override through `set_override`, which the router keeps in `override_dir` (one file per address) and drops
@@ -82,6 +83,7 @@ class Wan:
         self._overrides = {}
         self._used = {}
         self._usage_at = None
+        self._usage_error = None
         self._overrides_error = None
 
     def handle(self, command, args, source):
@@ -113,7 +115,7 @@ class Wan:
     def poll(self):
         status = self._read_status()
         overrides = self._overrides_or_last()
-        used = None
+        used = usage_error = None
         now = self._ctx.mono()
         devices = {link.device for link in self._links if link.device}
         if devices and (self._usage_at is None or now - self._usage_at >= self.USAGE_EVERY_S):
@@ -121,9 +123,9 @@ class Wan:
             try:
                 usage = self._usage(devices)
                 used = {link.name: usage[link.device] for link in self._links if link.device in usage}
-            except (OSError, subprocess.TimeoutExpired):
-                used = None
-        self._ctx.locked(lambda: self._apply(status, overrides, used))()
+            except (OSError, subprocess.TimeoutExpired) as e:
+                usage_error = f"cannot read usage: {e}"[:200]
+        self._ctx.locked(lambda: self._apply(status, overrides, used, usage_error))()
 
     def _read_status(self):
         out = {}
@@ -164,7 +166,7 @@ class Wan:
                 out[path.name] = isp
         return out
 
-    def _apply(self, status, overrides, used):
+    def _apply(self, status, overrides, used, usage_error):
         if self._status is not None:
             for name, now in status.items():
                 was_online, is_online = self._status.get(name) == "online", now == "online"
@@ -174,6 +176,12 @@ class Wan:
         self._status, self._overrides = status, overrides
         if used is not None:
             self._used = used
+            changed |= self._usage_error is not None
+            self._usage_error = None
+        elif usage_error is not None and usage_error != self._usage_error:
+            self._usage_error = usage_error
+            self._ctx.emit("error", reason=usage_error)
+            changed = True
         if changed:
             self._ctx.changed()
 
@@ -200,7 +208,10 @@ class Wan:
             if link.cap_bytes is not None:
                 entry["cap_bytes"] = link.cap_bytes
             links.append(entry)
-        return {"active": online[0] if online else None, "links": links}
+        out = {"active": online[0] if online else None, "links": links}
+        if self._usage_error is not None:
+            out["usage_error"] = self._usage_error
+        return out
 
 
 def _is_ipv4(text):

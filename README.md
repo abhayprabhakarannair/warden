@@ -10,7 +10,7 @@ Host agent: reports a machine's state and runs actions on it, over MQTT. Deploye
 | `system` | `kernel`, `uptime_s`, `boot_time`, `load`, `mem_used_pct` | |
 | `sensors` | `temps`: °C per hwmon chip and label | |
 | `wake` | `targets`: per machine `power` (`online`, `offline`, `waking`, `unknown`), `last_seen_s`, `waking_for_s`; same shape and events (`wake_sent`, `wake_failed`, `up`, `down`, `wake_timeout`) as imp. Adds `wakes` to `meta` | `wake <target>`: always sends the magic packet |
-| `wan` | `active` (first online link) and `links`: name, mwan3 status, `used_bytes` this cycle (vnstat, when a device is given) and `cap_bytes`; events `wan_up`, `wan_down`, `isp_set`, `isp_failed` | `isp <ip> <link\|auto>`: route one device through a link, through the router's `wanpref` ubus helper; the router drops the override while that link is offline |
+| `wan` | `active` (first online link) and `links`: name, mwan3 status, `used_bytes` this cycle (vnstat, when a device is given) and `cap_bytes`; `usage_error` while usage cannot be read (last values kept); events `wan_up`, `wan_down`, `isp_set`, `isp_failed` | `isp <ip> <link\|auto>`: route one device through a link, through the router's `wanpref` ubus helper; the router drops the override while that link is offline |
 | `clients` | `online`: every LAN address with a resolved neighbour entry, named by DHCP reservation then lease; `link` (`wifi` with `band` and `signal`, or `wired`) when a Wi-Fi API is set; `via` and `override` from `wan`; events `joined`, `left`; no MAC addresses | |
 
 Power actions bypass inhibitors (`systemctl … --check-inhibitors=no`): a remote command must not be blocked by a desktop app.
