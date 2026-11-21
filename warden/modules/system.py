@@ -6,10 +6,12 @@ class System:
     name = "system"
     commands = ()
 
-    def __init__(self, ctx, proc=Path("/proc"), kernel=None):
+    def __init__(self, ctx, proc=Path("/proc"), kernel=None, disks=("/",), statvfs=os.statvfs):
         self._ctx = ctx
         self._proc = Path(proc)
         self._kernel = kernel or os.uname().release
+        self._disks = tuple(disks)
+        self._statvfs = statvfs
 
     def handle(self, command, args, source):
         raise ValueError(f"system has no command {command!r}")
@@ -26,7 +28,25 @@ class System:
         mem = self._mem_used_pct()
         if mem is not None:
             out["mem_used_pct"] = mem
+        disks = [d for d in map(self._disk, self._disks) if d]
+        if disks:
+            out["disks"] = disks
         return out
+
+    def _disk(self, mount):
+        """Usage as df reports it: blocks reserved for root count as neither used nor available."""
+        try:
+            st = self._statvfs(mount)
+        except OSError:
+            return None
+        used = st.f_blocks - st.f_bfree
+        if st.f_blocks <= 0 or used < 0 or used + st.f_bavail <= 0:
+            return None
+        return {
+            "mount": mount,
+            "used_pct": round(100 * used / (used + st.f_bavail), 1),
+            "size_bytes": st.f_blocks * st.f_frsize,
+        }
 
     def _read(self, name):
         try:

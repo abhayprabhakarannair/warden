@@ -7,11 +7,12 @@ Host agent: reports a machine's state and runs actions on it, over MQTT. Deploye
 | Module | State | Commands |
 |---|---|---|
 | `power` | `pending`: action, source, seconds left | `shutdown`, `reboot`, `suspend` after `WARDEN_GRACE_S`; `cancel` |
-| `system` | `kernel`, `uptime_s`, `boot_time`, `load`, `mem_used_pct` | |
+| `system` | `kernel`, `uptime_s`, `boot_time`, `load`, `mem_used_pct`, `disks`: `mount`, `used_pct` (as `df`), `size_bytes` | |
 | `sensors` | `temps`: °C per hwmon chip and label | |
 | `wake` | `targets`: per machine `power` (`online`, `offline`, `waking`, `unknown`), `last_seen_s`, `waking_for_s`; events `wake_sent`, `wake_failed`, `up`, `down`, `wake_timeout`. Adds `wakes` to `meta` | `wake <target>`: always sends the magic packet |
-| `wan` | `active` (first online link) and `links`: name, mwan3 status, `used_bytes` this cycle (vnstat, when a device is given) and `cap_bytes`; `usage_error` while usage cannot be read (last values kept); events `wan_up`, `wan_down`, `isp_set`, `isp_failed` | `isp <ip> <link\|auto>`: route one device with a DHCP reservation through a link, through the router's `wanpref` ubus helper; the router drops the override while that link is offline |
+| `wan` | `active` (first online link) and `links`: name, mwan3 status, `used_bytes` this cycle (vnstat, when a device is given) and `cap_bytes`, `rx_bps`/`tx_bps` over 5 s from the device's counters; `usage_error` while usage cannot be read (last values kept); events `wan_up`, `wan_down`, `isp_set`, `isp_failed` | `isp <ip> <link\|auto>`: route one device with a DHCP reservation through a link, through the router's `wanpref` ubus helper; the router drops the override while that link is offline |
 | `clients` | `online`: every LAN address with a resolved neighbour entry, named by DHCP reservation then lease, `reserved` when the address is a reservation; `link` (`wifi` with `band` and `signal`, or `wired`) when a Wi-Fi API is set; `via` and `override` from `wan`; events `joined`, `left`; no MAC addresses | |
+| `ups` | `status` (`online`, `on_battery`, `low_battery`, `unknown`; from NUT's `ups.status`, LB over OB over OL), `flags`, `charge_pct`, `runtime_s`, `load_pct`, `power_w` (with a nominal rating), `input_v`, `model`; `error` while `upsc` fails (last values kept); events `on_battery`, `low_battery`, `on_line`, `ups_lost`, `ups_found` | |
 
 Power actions bypass inhibitors (`systemctl … --check-inhibitors=no`): a remote command must not be blocked by a desktop app.
 
@@ -28,7 +29,7 @@ Under `WARDEN_TOPIC` (default `home/<user>`): `meta` and `state` (retained), `st
 | `WARDEN_MQTT_USER` | required | also the default topic name |
 | `WARDEN_MQTT_PASSWORD_FILE` | required | |
 | `WARDEN_TOPIC` | `home/<user>` | |
-| `WARDEN_MODULES` | `power,system,sensors` | also `wake`, `wan`, `clients` |
+| `WARDEN_MODULES` | `power,system,sensors` | also `wake`, `wan`, `clients`, `ups` |
 | `WARDEN_WAKE_TARGETS` | required by `wake` | `name=mac@ip,…` |
 | `WARDEN_WAKE_BROADCAST` | required by `wake` | LAN broadcast address for magic packets |
 | `WARDEN_WANS` | required by `wan` | `name=mwan3-interface[/device],…` in failover order; the device enables usage |
@@ -36,6 +37,8 @@ Under `WARDEN_TOPIC` (default `home/<user>`): `meta` and `state` (retained), `st
 | `WARDEN_WAN_PREFERENCES` | | `ip=name,…`: the link a device tries first |
 | `WARDEN_LAN` | required by `clients` | LAN network, e.g. `192.0.2.0/24` |
 | `WARDEN_WIFI_API`, `WARDEN_WIFI_USER`, `WARDEN_WIFI_PASSWORD_FILE` | | an access point's ubus JSON-RPC URL and a login allowed `hostapd.*` `get_clients` |
+| `WARDEN_DISKS` | `/` | mounts `system` reports, comma-separated; empty for none |
+| `WARDEN_UPS` | required by `ups` | NUT UPS as `name@host[:port]`, read with `upsc` |
 | `WARDEN_GRACE_S` | `10` | |
 | `WARDEN_STATE_EVERY_S` | `30` | |
 | `WARDEN_DRY_RUN` | `0` | `1` logs power actions instead of running them |
@@ -47,4 +50,4 @@ pytest
 ruff check . && ruff format --check .
 ```
 
-`wake` pings over unprivileged ICMP sockets, so `net.ipv4.ping_group_range` must include the service's group. `wan` reads mwan3track's status files, `vnstat --json`, the override files in `/tmp/wanpref` and, for an `isp` command, `uci show dhcp`, and calls `ubus call wanpref set`; `clients` reads dnsmasq's lease file, `ip -4 neigh show` and `uci show dhcp`. All are readable by an unprivileged user on OpenWrt; the ubus call needs an ACL. Requires `paho-mqtt` 1.6 or 2.x at runtime; tests need neither the network nor paho. Enable the hooks once per clone: `git config core.hooksPath .githooks`.
+`wake` pings over unprivileged ICMP sockets, so `net.ipv4.ping_group_range` must include the service's group. `wan` reads mwan3track's status files, `vnstat --json`, the override files in `/tmp/wanpref` and, for an `isp` command, `uci show dhcp`, and calls `ubus call wanpref set`; `wan` also reads `/sys/class/net/<device>/statistics`. `ups` runs `upsc`, which needs no login. `clients` reads dnsmasq's lease file, `ip -4 neigh show` and `uci show dhcp`. All are readable by an unprivileged user on OpenWrt; the ubus call needs an ACL. Requires `paho-mqtt` 1.6 or 2.x at runtime; tests need neither the network nor paho. Enable the hooks once per clone: `git config core.hooksPath .githooks`.

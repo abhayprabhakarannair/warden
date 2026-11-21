@@ -11,6 +11,7 @@ from warden.modules.clients import Clients
 from warden.modules.power import Power
 from warden.modules.sensors import Sensors
 from warden.modules.system import System
+from warden.modules.ups import Ups
 from warden.modules.wake import Wake
 from warden.modules.wan import Wan
 from warden.modules.wifi import UbusWifi
@@ -53,11 +54,12 @@ def build(config, bus):
     wifi = UbusWifi(config.wifi_api, config.wifi_user, config.wifi_password) if config.wifi_api else None
     factories = {
         "power": lambda: Power(agent, config.grace_s, schedule(agent), run, dry_run=config.dry_run),
-        "system": lambda: System(agent),
+        "system": lambda: System(agent, disks=config.disks),
         "sensors": lambda: Sensors(agent),
         "wake": lambda: Wake(agent, config.wake_targets, config.wake_broadcast),
         "wan": lambda: wan,
         "clients": lambda: Clients(agent, config.lan, wifi=wifi, route=wan.route if wan else None),
+        "ups": lambda: Ups(agent, config.ups),
     }
     for name in config.modules:
         agent.add(factories[name]())

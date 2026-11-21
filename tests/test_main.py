@@ -49,6 +49,14 @@ def test_build_wires_router_modules(tmp_path):
     assert clients._route == agent.modules[2].route
 
 
+def test_build_wires_ups_and_disks(tmp_path):
+    bus = FakeBus()
+    agent = build(config(tmp_path, WARDEN_MODULES="system,ups", WARDEN_UPS="apc@localhost", WARDEN_DISKS="/"), bus)
+    system, ups = agent.modules
+    assert (system._disks, ups._ups) == (("/",), "apc@localhost")
+    assert [m.name for m in agent.modules if hasattr(m, "poll")] == ["ups"]
+
+
 def test_poll_forever_survives_any_error(capsys):
     import threading
 

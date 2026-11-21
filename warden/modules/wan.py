@@ -51,7 +51,9 @@ class Wan:
 
     Status comes from mwan3track's per-interface STATUS file; a missing file means tracking is stopped, as when the
     link is down. With a device and usage source, each link reports bytes used this cycle (and its cap); if usage
-    cannot be read, the last values stay and `usage_error` says why until a read succeeds.
+    cannot be read, the last values stay and `usage_error` says why until a read succeeds. A link with a device also
+    reports `rx_bps` and `tx_bps`, averaged over RATE_EVERY_S from the interface counters; a missing or reset counter
+    drops them for that window. A rate change alone publishes only when it is large (RATE_STEP_BPS or RATE_STEP).
 
     Per device: `preferences` maps an address to the ISP it tries first; `isp <ip> <isp|auto>` sets a runtime
     override through `set_override`, which the router keeps in `override_dir` (one file per address) and drops
@@ -64,6 +66,9 @@ class Wan:
     commands = ("isp",)
     args = MappingProxyType({"isp": 2})
     USAGE_EVERY_S = 60
+    RATE_EVERY_S = 5
+    RATE_STEP_BPS = 100_000
+    RATE_STEP = 0.1
 
     def __init__(
         self,
@@ -75,6 +80,7 @@ class Wan:
         usage=vnstat_usage,
         set_override=ubus_set,
         reserved=lambda: uci_hosts().keys(),
+        net_dir=Path("/sys/class/net"),
     ):
         self._ctx = ctx
         self._links = tuple(links)
@@ -85,6 +91,10 @@ class Wan:
         self._usage = usage
         self._set_override = set_override
         self._reserved = reserved
+        self._net_dir = Path(net_dir)
+        self._sample = None
+        self._rates = {}
+        self._rates_marked = {}
         self._status = None
         self._overrides = {}
         self._used = {}
@@ -134,7 +144,31 @@ class Wan:
                 used = {link.name: usage[link.device] for link in self._links if link.device in usage}
             except (OSError, subprocess.TimeoutExpired) as e:
                 usage_error = f"cannot read usage: {e}"[:200]
-        self._ctx.locked(lambda: self._apply(status, overrides, used, usage_error))()
+        rates = self._measure(now)
+        self._ctx.locked(lambda: self._apply(status, overrides, used, usage_error, rates))()
+
+    def _measure(self, now):
+        """Rates in bit/s per link since the last sample, once RATE_EVERY_S has passed; None until then."""
+        if self._sample is not None and now - self._sample[0] < self.RATE_EVERY_S:
+            return None
+        counters = {link.name: c for link in self._links if link.device and (c := self._counters(link.device))}
+        previous, self._sample = self._sample, (now, counters)
+        if previous is None:
+            return None
+        elapsed = now - previous[0]
+        rates = {}
+        for name, (rx, tx) in counters.items():
+            before = previous[1].get(name)
+            if before and rx >= before[0] and tx >= before[1]:
+                rates[name] = (round((rx - before[0]) * 8 / elapsed), round((tx - before[1]) * 8 / elapsed))
+        return rates
+
+    def _counters(self, device):
+        stats = self._net_dir / device / "statistics"
+        try:
+            return int((stats / "rx_bytes").read_text()), int((stats / "tx_bytes").read_text())
+        except (OSError, ValueError):
+            return None
 
     def _read_status(self):
         out = {}
@@ -175,7 +209,7 @@ class Wan:
                 out[path.name] = isp
         return out
 
-    def _apply(self, status, overrides, used, usage_error):
+    def _apply(self, status, overrides, used, usage_error, rates):
         if self._status is not None:
             for name, now in status.items():
                 was_online, is_online = self._status.get(name) == "online", now == "online"
@@ -191,7 +225,12 @@ class Wan:
             self._usage_error = usage_error
             self._ctx.emit("error", reason=usage_error)
             changed = True
+        if rates is not None:
+            self._rates = rates
+            if _moved(self._rates_marked, rates, self.RATE_STEP_BPS, self.RATE_STEP):
+                changed = True
         if changed:
+            self._rates_marked = self._rates
             self._ctx.changed()
 
     def _online(self):
@@ -216,11 +255,19 @@ class Wan:
                 entry["used_bytes"] = self._used[link.name]
             if link.cap_bytes is not None:
                 entry["cap_bytes"] = link.cap_bytes
+            if link.name in self._rates:
+                entry["rx_bps"], entry["tx_bps"] = self._rates[link.name]
             links.append(entry)
         out = {"active": online[0] if online else None, "links": links}
         if self._usage_error is not None:
             out["usage_error"] = self._usage_error
         return out
+
+
+def _moved(old, new, step_bps, step):
+    if old.keys() != new.keys():
+        return True
+    return any(abs(b - a) >= max(step_bps, step * a) for name in new for a, b in zip(old[name], new[name], strict=True))
 
 
 def _is_ipv4(text):

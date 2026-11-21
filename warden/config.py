@@ -9,7 +9,8 @@ from warden.modules.wan import Link
 
 NAME = re.compile(r"^[a-z0-9_-]{1,31}$")
 IFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
-KNOWN_MODULES = ("power", "system", "sensors", "wake", "wan", "clients")
+UPS = re.compile(r"^[A-Za-z0-9_.-]{1,64}@[A-Za-z0-9_.-]{1,253}(:[0-9]{1,5})?$")
+KNOWN_MODULES = ("power", "system", "sensors", "wake", "wan", "clients", "ups")
 DEFAULT_MODULES = ("power", "system", "sensors")
 
 
@@ -36,6 +37,8 @@ class Config:
     wifi_api: str = ""
     wifi_user: str = ""
     wifi_password: str = ""
+    ups: str = ""
+    disks: tuple[str, ...] = ("/",)
 
 
 def load(env=os.environ):
@@ -94,6 +97,12 @@ def load(env=os.environ):
             wifi_user = need("WARDEN_WIFI_USER")
             wifi_password = _secret("WARDEN_WIFI_PASSWORD_FILE", need("WARDEN_WIFI_PASSWORD_FILE"))
 
+    ups = ""
+    if "ups" in modules:
+        ups = need("WARDEN_UPS")
+        if not UPS.match(ups):
+            raise ConfigError(f"WARDEN_UPS must be name@host[:port], got {ups!r}")
+
     return Config(
         host=need("WARDEN_MQTT_HOST"),
         port=integer("WARDEN_MQTT_PORT", 8443, 1, 65535),
@@ -112,6 +121,8 @@ def load(env=os.environ):
         wifi_api=wifi_api,
         wifi_user=wifi_user,
         wifi_password=wifi_password,
+        ups=ups,
+        disks=_disks(env.get("WARDEN_DISKS", "/")),
     )
 
 
@@ -123,6 +134,16 @@ def _secret(key, path):
     if not value:
         raise ConfigError(f"{key} is empty")
     return value
+
+
+def _disks(raw):
+    mounts = tuple(m.strip() for m in raw.split(",") if m.strip())
+    for mount in mounts:
+        if not mount.startswith("/"):
+            raise ConfigError(f"WARDEN_DISKS: {mount!r} is not an absolute path")
+    if len(set(mounts)) != len(mounts):
+        raise ConfigError("WARDEN_DISKS lists a mount twice")
+    return mounts
 
 
 def _network(key, value):
