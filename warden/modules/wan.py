@@ -96,8 +96,11 @@ class Wan:
         except OSError as e:
             self._ctx.emit("isp_failed", ip=ip, isp=isp, source=source, error=str(e)[:200])
             return
-        self._overrides = self._read_overrides()
         self._ctx.emit("isp_set", ip=ip, isp=isp, source=source)
+        try:
+            self._overrides = self._read_overrides()
+        except PermissionError as e:
+            self._ctx.emit("error", reason=f"cannot read overrides: {e}"[:200])
         self._ctx.changed()
 
     def poll_every_s(self):
@@ -127,15 +130,17 @@ class Wan:
         return out
 
     def _read_overrides(self):
+        """No directory means no overrides; one this user cannot read is a setup fault and propagates, so it is
+        logged instead of every device quietly reading as not overridden."""
         out = {}
         try:
             entries = list(self._override_dir.iterdir())
-        except OSError:
+        except FileNotFoundError:
             return out
         for path in entries:
             try:
                 isp = path.read_text().strip()
-            except OSError:
+            except FileNotFoundError:
                 continue
             if isp in self._names and _is_ipv4(path.name):
                 out[path.name] = isp

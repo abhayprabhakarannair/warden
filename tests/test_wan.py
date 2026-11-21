@@ -1,3 +1,4 @@
+import os
 import subprocess
 
 import pytest
@@ -218,3 +219,33 @@ def test_hung_router_call_is_reported_and_releases_the_agent(agent, bus, router,
     assert bus.events()[-1]["event"] == "isp_failed"
     agent.on_message(b"refresh")
     assert bus.last("meta") is not None
+
+
+def test_unreadable_overrides_are_an_error_not_silence(router, wan):
+    (router.root / "overrides" / TV).write_text("jio\n")
+    (router.root / "overrides").chmod(0o000)
+    try:
+        if os.access(router.root / "overrides", os.R_OK):
+            pytest.skip("running as root: permissions are not enforced")
+        with pytest.raises(PermissionError):
+            wan.poll()
+    finally:
+        (router.root / "overrides").chmod(0o755)
+
+
+def test_missing_override_directory_means_none(router, wan):
+    import shutil
+
+    shutil.rmtree(router.root / "overrides")
+    wan.poll()
+    assert wan.route(TV)["override"] is None
+
+
+def test_isp_command_reports_unreadable_overrides_without_failing(agent, bus, router, wan):
+    def deny():
+        raise PermissionError("Permission denied: '/tmp/wanpref'")
+
+    wan._read_overrides = deny
+    agent.on_message(b"isp 192.0.2.8 jio console")
+    assert [e["event"] for e in bus.events()] == ["isp_set", "error"]
+    assert "cannot read overrides" in bus.events()[-1]["reason"]
