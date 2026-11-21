@@ -519,6 +519,18 @@ def test_going_offline_clears_quality_without_a_recovery_event(bus, clock, route
     assert "loss_pct" not in railwire(bus)
 
 
+def test_a_degraded_link_whose_tracking_stalls_recovers_once_the_window_empties(bus, clock, router, wan):
+    rounds(router, clock, wan, [False] * 20)
+    assert railwire(bus)["degraded"] is True
+    for _ in range(45):  # mwan3track stops writing rounds; the old samples age out
+        clock.advance(1)
+        wan.poll()
+    link = railwire(bus)
+    assert link["degraded"] is False and "loss_pct" not in link
+    assert bus.events()[-1] == {"event": "wan_recovered", "wan": "railwire", "loss_pct": None, "latency_ms": None}
+    assert router.degraded_calls[-1] == []
+
+
 def test_router_hears_the_degraded_set_on_change_and_every_minute(clock, router, wan):
     rounds(router, clock, wan, [True] * 20)
     assert router.degraded_calls == [[]]

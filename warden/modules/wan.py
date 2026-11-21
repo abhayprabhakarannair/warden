@@ -349,7 +349,12 @@ class Wan:
             while window and now - window[0][0] >= self.WINDOW_S:
                 window.popleft()
             if len(window) < self.MIN_SAMPLES:
+                # Too little data to judge (tracking stalled or restarted): never keep a link degraded on old samples.
                 self._quality.pop(name, None)
+                if name in self._degraded:
+                    self._degraded.discard(name)
+                    self._ctx.emit("wan_recovered", wan=name, loss_pct=None, latency_ms=None)
+                    flipped = True
                 continue
             loss = round(100 * sum(not ok for _, ok, _ in window) / len(window), 1)
             times = [ms for _, ok, ms in window if ok and ms is not None]
