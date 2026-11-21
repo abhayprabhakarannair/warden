@@ -90,12 +90,44 @@ def test_usage_is_read_once_a_minute(agent, clock, router, wan):
     assert router.usage_calls == 2
 
 
-def test_usage_failure_keeps_the_last_values(agent, bus, clock, router, wan):
+def test_usage_failure_keeps_the_last_values_and_is_reported_until_a_read_succeeds(agent, bus, clock, router, wan):
+    wan.poll()
+    bus.clear()
+    router.fail = OSError("vnstat exited 1: Error: Database is empty.")
+    clock.advance(60)
+    wan.poll()
+    state = bus.state()["wan"]
+    assert state["links"][2]["used_bytes"] == 300
+    assert state["usage_error"] == "cannot read usage: vnstat exited 1: Error: Database is empty."
+    clock.advance(60)
+    wan.poll()
+    assert [e["event"] for e in bus.events()] == ["error"]
+    router.fail = None
+    router.usage["lan3"] = 400
+    clock.advance(60)
+    wan.poll()
+    state = bus.state()["wan"]
+    assert "usage_error" not in state
+    assert state["links"][2]["used_bytes"] == 400
+
+
+def test_usage_failing_from_the_start_reports_why_with_no_values(bus, router, wan):
+    router.fail = subprocess.TimeoutExpired("vnstat", 10)
+    wan.poll()
+    state = bus.state()["wan"]
+    assert state["usage_error"].startswith("cannot read usage: Command 'vnstat' timed out")
+    assert all("used_bytes" not in link for link in state["links"])
+
+
+def test_recovery_without_new_usage_still_clears_the_error(bus, clock, router, wan):
     wan.poll()
     router.fail = OSError("vnstat missing")
     clock.advance(60)
     wan.poll()
-    assert bus.state()["wan"]["links"][2]["used_bytes"] == 300
+    router.fail = None
+    clock.advance(60)
+    wan.poll()
+    assert "usage_error" not in bus.state()["wan"]
 
 
 def test_transitions_are_events_but_first_poll_is_not(agent, bus, router, wan):
