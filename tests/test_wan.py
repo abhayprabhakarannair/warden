@@ -34,6 +34,12 @@ class Router:
             raise self.fail
         return {d: b for d, b in self.usage.items() if d in devices}
 
+    def counters(self, device, rx, tx):
+        d = self.root / "net" / device / "statistics"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "rx_bytes").write_text(f"{rx}\n")
+        (d / "tx_bytes").write_text(f"{tx}\n")
+
     def set_override(self, ip, isp):
         if self.fail:
             raise self.fail
@@ -61,6 +67,7 @@ def wan(agent, router):
         usage=router.read_usage,
         set_override=router.set_override,
         reserved=lambda: {STB, TV},
+        net_dir=router.root / "net",
     )
     agent.add(module)
     return module
@@ -326,3 +333,71 @@ def test_isp_command_with_unreadable_overrides_reflects_what_the_router_accepted
     agent.on_message(b"isp 192.0.2.7 auto")
     assert wan.route(STB, True)["override"] is None
     assert bus.state()["wan"]["active"] == "bsnl"
+
+
+def rates(bus):
+    return {link["name"]: (link.get("rx_bps"), link.get("tx_bps")) for link in bus.state()["wan"]["links"]}
+
+
+def test_rates_are_averaged_over_the_window(bus, clock, router, wan):
+    router.counters("wan1", 1_000_000, 500_000)
+    router.counters("lan2", 0, 0)
+    wan.poll()
+    assert rates(bus) == {"bsnl": (None, None), "railwire": (None, None), "jio": (None, None)}
+    router.counters("wan1", 26_000_000, 3_000_000)
+    clock.advance(2)
+    wan.poll()
+    assert rates(bus)["bsnl"] == (None, None)
+    clock.advance(3)
+    wan.poll()
+    assert rates(bus) == {"bsnl": (40_000_000, 4_000_000), "railwire": (0, 0), "jio": (None, None)}
+
+
+def test_a_reset_counter_drops_the_rate_for_one_window(bus, clock, router, wan):
+    router.counters("wan1", 5_000_000, 5_000_000)
+    wan.poll()
+    router.counters("wan1", 1_000, 1_000)
+    clock.advance(5)
+    wan.poll()
+    assert rates(bus)["bsnl"] == (None, None)
+    router.counters("wan1", 626_000, 1_000)
+    clock.advance(5)
+    wan.poll()
+    assert rates(bus)["bsnl"] == (1_000_000, 0)
+
+
+@pytest.mark.parametrize("content", [None, "garbage"])
+def test_unreadable_counters_give_no_rate(bus, clock, router, wan, content):
+    router.counters("wan1", 0, 0)
+    wan.poll()
+    stats = router.root / "net" / "wan1" / "statistics" / "rx_bytes"
+    if content is None:
+        stats.unlink()
+    else:
+        stats.write_text(content)
+    clock.advance(5)
+    wan.poll()
+    assert rates(bus)["bsnl"] == (None, None)
+
+
+def test_only_large_rate_changes_publish(bus, clock, router, wan):
+    rx = 0
+    router.counters("wan1", rx, 0)
+    wan.poll()
+
+    def step(bps):
+        nonlocal rx
+        rx += bps * 5 // 8
+        router.counters("wan1", rx, 0)
+        clock.advance(5)
+        bus.clear()
+        wan.poll()
+        return bus.last("state") is not None
+
+    assert step(10_000_000)
+    assert not step(10_500_000)
+    assert step(11_000_000)
+    assert not step(11_050_000)
+    assert step(0)
+    assert not step(90_000)
+    assert step(200_000)

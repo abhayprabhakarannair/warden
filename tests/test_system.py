@@ -14,7 +14,7 @@ def proc(tmp_path):
 
 
 def test_full_state(agent, clock, proc):
-    state = System(agent, proc=proc, kernel="7.3.5").state()
+    state = System(agent, proc=proc, kernel="7.3.5", disks=()).state()
     assert state == {
         "kernel": "7.3.5",
         "uptime_s": 3600,
@@ -53,3 +53,27 @@ def test_garbage_is_ignored(agent, proc, name, content, field):
 def test_has_no_commands(agent, proc):
     with pytest.raises(ValueError):
         System(agent, proc=proc, kernel="k").handle("anything", (), "x")
+
+
+class Vfs:
+    def __init__(self, blocks, bfree, bavail, frsize=4096):
+        self.f_blocks, self.f_bfree, self.f_bavail, self.f_frsize = blocks, bfree, bavail, frsize
+
+
+def test_disks_report_like_df(agent, proc):
+    mounts = {"/": Vfs(1000, 300, 250), "/home": Vfs(2000, 2000, 2000)}
+    state = System(agent, proc=proc, kernel="k", disks=("/", "/home"), statvfs=mounts.__getitem__).state()
+    assert state["disks"] == [
+        {"mount": "/", "used_pct": 73.7, "size_bytes": 4096000},
+        {"mount": "/home", "used_pct": 0.0, "size_bytes": 8192000},
+    ]
+
+
+def test_unreadable_and_empty_mounts_are_skipped(agent, proc):
+    def statvfs(mount):
+        if mount == "/gone":
+            raise FileNotFoundError(mount)
+        return Vfs(0, 0, 0)
+
+    state = System(agent, proc=proc, kernel="k", disks=("/gone", "/proc"), statvfs=statvfs).state()
+    assert "disks" not in state

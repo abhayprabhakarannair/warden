@@ -86,7 +86,12 @@ def test_integer_bounds(env, key, value):
 
 @pytest.mark.parametrize(
     ("value", "message"),
-    [("power,ups", "unknown modules: ups"), ("power,power", "twice"), ("", "no modules"), (" , ", "no modules")],
+    [
+        ("power,battery", "unknown modules: battery"),
+        ("power,power", "twice"),
+        ("", "no modules"),
+        (" , ", "no modules"),
+    ],
 )
 def test_modules(env, value, message):
     env["WARDEN_MODULES"] = value
@@ -171,7 +176,33 @@ def test_bad_clients_settings(env, extra, message):
 
 
 def test_module_settings_are_only_required_when_enabled(env):
-    assert load(env).wake_targets == ()
+    c = load(env)
+    assert (c.wake_targets, c.ups) == ((), "")
+
+
+def test_ups_and_disks(env):
+    env |= {"WARDEN_MODULES": "system,ups", "WARDEN_UPS": "apc@localhost:3493", "WARDEN_DISKS": " / , /home ,"}
+    c = load(env)
+    assert (c.ups, c.disks) == ("apc@localhost:3493", ("/", "/home"))
+    assert load(env | {"WARDEN_DISKS": ""}).disks == ()
+    assert load({k: v for k, v in env.items() if k != "WARDEN_DISKS"}).disks == ("/",)
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"WARDEN_UPS": ""}, "WARDEN_UPS is required"),
+        ({"WARDEN_UPS": "apc"}, "name@host"),
+        ({"WARDEN_UPS": "apc@local host"}, "name@host"),
+        ({"WARDEN_UPS": "apc@localhost:port"}, "name@host"),
+        ({"WARDEN_DISKS": "/,home"}, "absolute"),
+        ({"WARDEN_DISKS": "/,/"}, "twice"),
+    ],
+)
+def test_bad_ups_and_disk_settings(env, extra, message):
+    env |= {"WARDEN_MODULES": "ups", "WARDEN_UPS": "apc@localhost"} | extra
+    with pytest.raises(ConfigError, match=message):
+        load(env)
 
 
 @pytest.mark.parametrize(
