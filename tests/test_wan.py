@@ -259,3 +259,18 @@ def test_isp_command_reports_unreadable_overrides_without_failing(agent, bus, ro
     agent.on_message(b"isp 192.0.2.8 jio console")
     assert [e["event"] for e in bus.events()] == ["isp_set", "error"]
     assert "cannot read overrides" in bus.events()[-1]["reason"]
+
+
+def test_isp_command_with_unreadable_overrides_reflects_what_the_router_accepted(agent, bus, router, wan):
+    agent.on_message(b"isp 192.0.2.7 railwire")
+    wan.poll()
+
+    def deny():
+        raise PermissionError("Permission denied: '/tmp/wanpref'")
+
+    wan._read_overrides = deny
+    agent.on_message(b"isp 192.0.2.8 jio")
+    assert wan.route(TV)["override"] == "jio"
+    agent.on_message(b"isp 192.0.2.7 auto")
+    assert wan.route(STB)["override"] is None
+    assert bus.state()["wan"]["active"] == "bsnl"

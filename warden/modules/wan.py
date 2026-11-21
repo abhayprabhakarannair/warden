@@ -98,7 +98,13 @@ class Wan:
             self._ctx.emit("isp_failed", ip=ip, isp=isp, source=source, error=str(e)[:200])
             return
         self._ctx.emit("isp_set", ip=ip, isp=isp, source=source)
-        self._overrides = self._overrides_or_last()
+        overrides = self._overrides_or_last()
+        if self._overrides_error is not None:
+            # The router accepted the change; reflect it rather than the stale copy until the files are readable.
+            overrides = {k: v for k, v in overrides.items() if k != ip}
+            if isp != "auto":
+                overrides[ip] = isp
+        self._overrides = overrides
         self._ctx.changed()
 
     def poll_every_s(self):
