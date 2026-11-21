@@ -60,6 +60,7 @@ def wan(agent, router):
         override_dir=router.root / "overrides",
         usage=router.read_usage,
         set_override=router.set_override,
+        reserved=lambda: {STB, TV},
     )
     agent.add(module)
     return module
@@ -163,11 +164,11 @@ def test_unchanged_poll_does_not_republish(bus, wan):
 
 def test_route_follows_preference_then_house_order(router, wan):
     wan.poll()
-    assert wan.route(STB) == {"via": "jio", "override": None}
-    assert wan.route(TV) == {"via": "bsnl", "override": None}
+    assert wan.route(STB, True) == {"via": "jio", "override": None}
+    assert wan.route(TV, True) == {"via": "bsnl", "override": None}
     router.status(wan_jio="offline")
     wan.poll()
-    assert wan.route(STB) == {"via": "bsnl", "override": None}
+    assert wan.route(STB, True) == {"via": "bsnl", "override": None}
 
 
 def test_isp_command_sets_an_override(agent, bus, router, wan):
@@ -175,21 +176,40 @@ def test_isp_command_sets_an_override(agent, bus, router, wan):
     agent.on_message(b"isp 192.0.2.8 jio console")
     assert router.set_calls == [(TV, "jio")]
     assert {"event": "isp_set", "ip": TV, "isp": "jio", "source": "console"} in bus.events()
-    assert wan.route(TV) == {"via": "jio", "override": "jio"}
+    assert wan.route(TV, True) == {"via": "jio", "override": "jio"}
 
 
 def test_override_on_an_offline_isp_falls_back(agent, router, wan):
     agent.on_message(b"isp 192.0.2.8 jio")
     router.status(wan_jio="offline")
     wan.poll()
-    assert wan.route(TV) == {"via": "bsnl", "override": "jio"}
+    assert wan.route(TV, True) == {"via": "bsnl", "override": "jio"}
 
 
 def test_auto_clears_the_override(agent, router, wan):
     agent.on_message(b"isp 192.0.2.8 railwire")
     agent.on_message(b"isp 192.0.2.8 auto")
     wan.poll()
-    assert wan.route(TV) == {"via": "bsnl", "override": None}
+    assert wan.route(TV, True) == {"via": "bsnl", "override": None}
+
+
+def test_unreserved_address_is_rejected_without_calling_the_router(agent, bus, router, wan):
+    agent.on_message(b"isp 192.0.2.9 jio")
+    assert router.set_calls == []
+    assert bus.events() == [
+        {"event": "rejected", "command": "isp", "reason": "not a reserved address", "ip": "192.0.2.9"}
+    ]
+
+
+def test_auto_is_allowed_for_an_unreserved_address(agent, router, wan):
+    agent.on_message(b"isp 192.0.2.9 auto")
+    assert router.set_calls == [("192.0.2.9", "auto")]
+
+
+def test_override_of_an_unreserved_address_is_ignored(router, wan):
+    (router.root / "overrides" / "192.0.2.9").write_text("jio\n")
+    wan.poll()
+    assert wan.route("192.0.2.9", False) == {"via": "bsnl", "override": None}
 
 
 def test_unknown_isp_is_rejected_without_calling_the_router(agent, bus, router, wan):
@@ -215,7 +235,7 @@ def test_router_refusal_is_reported(agent, bus, router, wan):
 def test_unknown_override_files_are_ignored(router, wan):
     (router.root / "overrides" / TV).write_text("starlink\n")
     wan.poll()
-    assert wan.route(TV)["override"] is None
+    assert wan.route(TV, True)["override"] is None
 
 
 @pytest.mark.parametrize("ip", ["..", "...", "192.0.2", "999.1.1.1", "192.0.2.07"])
@@ -267,7 +287,7 @@ def test_unreadable_overrides_keep_status_flowing_and_are_reported_once(agent, b
     wan.poll()
     assert [e["event"] for e in bus.events()] == ["error", "wan_down"]
     assert bus.state()["wan"]["active"] == "railwire"
-    assert wan.route(TV)["override"] == "jio"
+    assert wan.route(TV, True)["override"] == "jio"
     wan._read_overrides = readable
     wan.poll()
     wan._read_overrides = deny
@@ -280,7 +300,7 @@ def test_missing_override_directory_means_none(router, wan):
 
     shutil.rmtree(router.root / "overrides")
     wan.poll()
-    assert wan.route(TV)["override"] is None
+    assert wan.route(TV, True)["override"] is None
 
 
 def test_isp_command_reports_unreadable_overrides_without_failing(agent, bus, router, wan):
@@ -302,7 +322,7 @@ def test_isp_command_with_unreadable_overrides_reflects_what_the_router_accepted
 
     wan._read_overrides = deny
     agent.on_message(b"isp 192.0.2.8 jio")
-    assert wan.route(TV)["override"] == "jio"
+    assert wan.route(TV, True)["override"] == "jio"
     agent.on_message(b"isp 192.0.2.7 auto")
-    assert wan.route(STB)["override"] is None
+    assert wan.route(STB, True)["override"] is None
     assert bus.state()["wan"]["active"] == "bsnl"

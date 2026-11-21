@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
+from warden.modules.clients import uci_hosts
+
 
 @dataclass(frozen=True)
 class Link:
@@ -53,7 +55,9 @@ class Wan:
 
     Per device: `preferences` maps an address to the ISP it tries first; `isp <ip> <isp|auto>` sets a runtime
     override through `set_override`, which the router keeps in `override_dir` (one file per address) and drops
-    while that ISP is offline. route(ip) says which ISP a device's traffic uses.
+    while that ISP is offline. Only devices with a DHCP reservation (from `reserved`) can be switched: another device
+    could later lease an unreserved address and inherit its override. route(ip, reserved) says which ISP a device's
+    traffic uses.
     """
 
     name = "wan"
@@ -70,6 +74,7 @@ class Wan:
         override_dir=Path("/tmp/wanpref"),
         usage=vnstat_usage,
         set_override=ubus_set,
+        reserved=lambda: uci_hosts().keys(),
     ):
         self._ctx = ctx
         self._links = tuple(links)
@@ -79,6 +84,7 @@ class Wan:
         self._override_dir = Path(override_dir)
         self._usage = usage
         self._set_override = set_override
+        self._reserved = reserved
         self._status = None
         self._overrides = {}
         self._used = {}
@@ -93,6 +99,9 @@ class Wan:
             return
         if isp != "auto" and isp not in self._names:
             self._ctx.emit("rejected", command=command, reason="unknown isp", isp=isp)
+            return
+        if isp != "auto" and ip not in self._reserved():
+            self._ctx.emit("rejected", command=command, reason="not a reserved address", ip=ip)
             return
         try:
             self._set_override(ip, isp)
@@ -189,9 +198,9 @@ class Wan:
         status = self._status if self._status is not None else self._read_status()
         return [n for n in self._names if status.get(n) == "online"]
 
-    def route(self, ip):
+    def route(self, ip, reserved):
         online = self._online()
-        override = self._overrides.get(ip)
+        override = self._overrides.get(ip) if reserved else None
         preferred = self._preferences.get(ip)
         order = ([preferred] if preferred else []) + [n for n in self._names if n != preferred]
         via = override if override in online else next((n for n in order if n in online), None)

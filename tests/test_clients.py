@@ -52,10 +52,10 @@ def test_lan_neighbours_named_by_reservation_then_lease(agent, bus, files):
     clients.poll()
     assert bus.state()["clients"] == {
         "online": [
-            {"name": "eap225", "ip": "192.0.2.2"},
-            {"name": "devil", "ip": "192.0.2.4"},
-            {"name": "old-devil", "ip": "192.0.2.103"},
-            {"name": None, "ip": "192.0.2.204"},
+            {"name": "eap225", "ip": "192.0.2.2", "reserved": False},
+            {"name": "devil", "ip": "192.0.2.4", "reserved": True},
+            {"name": "old-devil", "ip": "192.0.2.103", "reserved": True},
+            {"name": None, "ip": "192.0.2.204", "reserved": False},
         ]
     }
     assert "02:00" not in bus.last("state")
@@ -68,6 +68,7 @@ def test_links_from_the_access_point(agent, bus, files):
     assert online["192.0.2.204"] == {
         "name": None,
         "ip": "192.0.2.204",
+        "reserved": False,
         "link": "wifi",
         "band": "2.4 GHz",
         "signal": -61,
@@ -85,9 +86,22 @@ def test_unreachable_access_point_leaves_links_unknown(agent, bus, files):
 
 def test_route_is_added_per_device_at_publish_time(agent, bus, files):
     via = {"192.0.2.4": "bsnl"}
-    clients = make(agent, files, route=lambda ip: {"via": via.get(ip, "jio"), "override": None})
+    seen = {}
+
+    def route(ip, reserved):
+        seen[ip] = reserved
+        return {"via": via.get(ip, "jio"), "override": None}
+
+    clients = make(agent, files, route=route)
     clients.poll()
-    assert bus.state()["clients"]["online"][1] == {"name": "devil", "ip": "192.0.2.4", "via": "bsnl", "override": None}
+    assert bus.state()["clients"]["online"][1] == {
+        "name": "devil",
+        "ip": "192.0.2.4",
+        "reserved": True,
+        "via": "bsnl",
+        "override": None,
+    }
+    assert seen["192.0.2.4"] is True and seen["192.0.2.204"] is False
     via["192.0.2.4"] = "railwire"
     agent.changed()
     agent.tick()

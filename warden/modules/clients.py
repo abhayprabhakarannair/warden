@@ -38,8 +38,9 @@ class Clients:
     """Devices on the LAN: every address in `lan` with a resolved neighbour entry, one per hardware address.
 
     A device seen at several addresses (it moved, and the old entry has not expired) is listed once: at the address
-    its DHCP lease names, else the most recently confirmed one. Names come from DHCP reservations, then leases. With a Wi-Fi source, each device also gets `link` (`wifi` with
-    `band` and `signal`, or `wired`); with a route source, `via` (the ISP its traffic uses) and `override`.
+    its DHCP lease names, else the most recently confirmed one. Names come from DHCP reservations, then leases;
+    `reserved` says whether the address is a reservation. With a Wi-Fi source, each device also gets `link` (`wifi`
+    with `band` and `signal`, or `wired`); with a route source, `via` (the ISP its traffic uses) and `override`.
     Publishes no MAC addresses. Emits `joined` and `left`.
     """
 
@@ -78,7 +79,8 @@ class Clients:
     def _scan(self):
         leases = self._leases_by_ip()
         neighbours = self._neighbours({ip: mac for ip, (mac, _) in leases.items()})
-        names = {**{ip: name for ip, (_, name) in leases.items() if name}, **self._hosts()}
+        hosts = self._hosts()
+        names = {**{ip: name for ip, (_, name) in leases.items() if name}, **hosts}
         stations = None
         if self._wifi is not None:
             try:
@@ -87,7 +89,7 @@ class Clients:
                 stations = None
         devices = {}
         for ip, mac in neighbours.items():
-            device = {"name": names.get(ip), "ip": ip}
+            device = {"name": names.get(ip), "ip": ip, "reserved": ip in hosts}
             if stations is not None:
                 station = stations.get(mac)
                 device |= {"link": "wifi", **station} if station else {"link": "wired"}
@@ -109,7 +111,7 @@ class Clients:
         for ip in sorted(self._devices or {}, key=_order):
             device = dict(self._devices[ip])
             if self._route is not None:
-                device |= self._route(ip)
+                device |= self._route(ip, device["reserved"])
             out.append(device)
         return {"online": out}
 
