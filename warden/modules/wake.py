@@ -53,7 +53,7 @@ def icmp_ping(ip, timeout_s=1.0):
 
 
 class Monitor:
-    """One machine's power as seen by ping; mirrors imp's Monitor so both report the same states."""
+    """One machine's power as seen by ping."""
 
     def __init__(self, offline_after, wake_timeout_s):
         self._offline_after = max(1, offline_after)
