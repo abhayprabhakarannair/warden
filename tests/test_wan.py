@@ -218,3 +218,59 @@ def test_hung_router_call_is_reported_and_releases_the_agent(agent, bus, router,
     assert bus.events()[-1]["event"] == "isp_failed"
     agent.on_message(b"refresh")
     assert bus.last("meta") is not None
+
+
+def test_unreadable_overrides_keep_status_flowing_and_are_reported_once(agent, bus, router, wan):
+    agent.on_message(b"isp 192.0.2.8 jio")
+    wan.poll()
+    bus.clear()
+
+    def deny():
+        raise PermissionError("Permission denied: '/tmp/wanpref'")
+
+    readable = wan._read_overrides
+    wan._read_overrides = deny
+    router.status(wan_bsnl="offline")
+    wan.poll()
+    wan.poll()
+    assert [e["event"] for e in bus.events()] == ["error", "wan_down"]
+    assert bus.state()["wan"]["active"] == "railwire"
+    assert wan.route(TV)["override"] == "jio"
+    wan._read_overrides = readable
+    wan.poll()
+    wan._read_overrides = deny
+    wan.poll()
+    assert [e["event"] for e in bus.events()].count("error") == 2
+
+
+def test_missing_override_directory_means_none(router, wan):
+    import shutil
+
+    shutil.rmtree(router.root / "overrides")
+    wan.poll()
+    assert wan.route(TV)["override"] is None
+
+
+def test_isp_command_reports_unreadable_overrides_without_failing(agent, bus, router, wan):
+    def broken():
+        raise IsADirectoryError("Is a directory: '/tmp/wanpref/192.0.2.8'")
+
+    wan._read_overrides = broken
+    agent.on_message(b"isp 192.0.2.8 jio console")
+    assert [e["event"] for e in bus.events()] == ["isp_set", "error"]
+    assert "cannot read overrides" in bus.events()[-1]["reason"]
+
+
+def test_isp_command_with_unreadable_overrides_reflects_what_the_router_accepted(agent, bus, router, wan):
+    agent.on_message(b"isp 192.0.2.7 railwire")
+    wan.poll()
+
+    def deny():
+        raise PermissionError("Permission denied: '/tmp/wanpref'")
+
+    wan._read_overrides = deny
+    agent.on_message(b"isp 192.0.2.8 jio")
+    assert wan.route(TV)["override"] == "jio"
+    agent.on_message(b"isp 192.0.2.7 auto")
+    assert wan.route(STB)["override"] is None
+    assert bus.state()["wan"]["active"] == "bsnl"

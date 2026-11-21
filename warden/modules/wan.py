@@ -82,6 +82,7 @@ class Wan:
         self._overrides = {}
         self._used = {}
         self._usage_at = None
+        self._overrides_error = None
 
     def handle(self, command, args, source):
         ip, isp = args
@@ -96,15 +97,22 @@ class Wan:
         except OSError as e:
             self._ctx.emit("isp_failed", ip=ip, isp=isp, source=source, error=str(e)[:200])
             return
-        self._overrides = self._read_overrides()
         self._ctx.emit("isp_set", ip=ip, isp=isp, source=source)
+        overrides = self._overrides_or_last()
+        if self._overrides_error is not None:
+            # The router accepted the change; reflect it rather than the stale copy until the files are readable.
+            overrides = {k: v for k, v in overrides.items() if k != ip}
+            if isp != "auto":
+                overrides[ip] = isp
+        self._overrides = overrides
         self._ctx.changed()
 
     def poll_every_s(self):
         return 2
 
     def poll(self):
-        status, overrides = self._read_status(), self._read_overrides()
+        status = self._read_status()
+        overrides = self._overrides_or_last()
         used = None
         now = self._ctx.mono()
         devices = {link.device for link in self._links if link.device}
@@ -126,16 +134,31 @@ class Wan:
                 out[link.name] = "down"
         return out
 
+    def _overrides_or_last(self):
+        """Overrides are optional: if they cannot be read, keep the last known ones so links, events and usage keep
+        flowing, and report the failure once (again only after it has cleared)."""
+        try:
+            overrides = self._read_overrides()
+        except OSError as e:
+            reason = f"cannot read overrides: {e}"[:200]
+            if reason != self._overrides_error:
+                self._overrides_error = reason
+                self._ctx.emit("error", reason=reason)
+            return self._overrides
+        self._overrides_error = None
+        return overrides
+
     def _read_overrides(self):
+        """No directory means no overrides; any other error is raised."""
         out = {}
         try:
             entries = list(self._override_dir.iterdir())
-        except OSError:
+        except FileNotFoundError:
             return out
         for path in entries:
             try:
                 isp = path.read_text().strip()
-            except OSError:
+            except FileNotFoundError:
                 continue
             if isp in self._names and _is_ipv4(path.name):
                 out[path.name] = isp
